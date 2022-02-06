@@ -2,14 +2,22 @@ create or replace package body ExcelTypes is
 
   type simpleTypeMap_t is table of pls_integer index by varchar2(16);
   
-  fillPatternMap  simpleTypeMap_t;
-  borderStyleMap  simpleTypeMap_t;
-  hAlignmentMap   simpleTypeMap_t;
-  vAlignmentMap   simpleTypeMap_t;
+  underlineStyleMap  simpleTypeMap_t;
+  fillPatternMap     simpleTypeMap_t;
+  borderStyleMap     simpleTypeMap_t;
+  hAlignmentMap      simpleTypeMap_t;
+  vAlignmentMap      simpleTypeMap_t;
   
   procedure initialize
   is
   begin
+    
+    -- underline style
+    underlineStyleMap('none') := 0;
+    underlineStyleMap('single') := 1;
+    underlineStyleMap('double') := 2;
+    underlineStyleMap('singleAccounting') := 33;
+    underlineStyleMap('doubleAccounting') := 34;
     
     -- fill pattern type
     fillPatternMap('none') := 0;
@@ -67,6 +75,11 @@ create or replace package body ExcelTypes is
     
   end;
   
+  function isValidUnderlineStyle (p_underlineStyle in varchar2) return boolean is
+  begin
+    return underlineStyleMap.exists(p_underlineStyle);
+  end;
+  
   function isValidPatternType (p_patternType in varchar2) return boolean is
   begin
     return fillPatternMap.exists(p_patternType);
@@ -87,6 +100,11 @@ create or replace package body ExcelTypes is
     return vAlignmentMap.exists(p_vAlignment);
   end;
 
+  function getUnderlineStyleId (p_underlineStyle in varchar2) return pls_integer is
+  begin  
+    return underlineStyleMap(p_underlineStyle);
+  end;
+  
   function getFillPatternTypeId (p_patternType in varchar2) return pls_integer is
   begin
     return fillPatternMap(p_patternType);

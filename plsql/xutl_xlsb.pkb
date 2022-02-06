@@ -31,6 +31,7 @@ create or replace package body xutl_xlsb is
   BRT_WSPROP            constant pls_integer := 147;
   BRT_PANE              constant pls_integer := 151;
   BRT_BUNDLESH          constant pls_integer := 156;
+  BRT_CALCPROP          constant pls_integer := 157;
   BRT_BOOKVIEW          constant pls_integer := 158;
   BRT_BEGINSST          constant pls_integer := 159;
   BRT_BEGINAFILTER      constant pls_integer := 161;
@@ -811,7 +812,7 @@ create or replace package body xutl_xlsb is
                                , 2 ));
     write_record(rec, case when font.b then 'BC02' else '9001' end);  -- bls
     write_record(rec, '0000');  -- sss : None
-    write_record(rec, '00');    -- uls : None
+    write_record(rec, int2raw(ExcelTypes.getUnderlineStyleId(nvl(font.u,'none')), 1));  -- uls
     write_record(rec, '00');    -- bFamily : Not applicable
     write_record(rec, '01');    -- bCharset : DEFAULT_CHARSET
     write_record(rec, '00');    -- unused
@@ -876,6 +877,7 @@ create or replace package body xutl_xlsb is
   , borderId    in pls_integer default 0
   , hAlignment  in varchar2 default null
   , vAlignment  in varchar2 default null
+  , wrapText    in boolean default false
   )
   return Record_T
   is
@@ -892,7 +894,7 @@ create or replace package body xutl_xlsb is
     write_record(xf, 
       bitVector( b0 => ExcelTypes.getHorizontalAlignmentId(nvl(hAlignment,'general'))  -- alc (3 bits)
                , b3 => ExcelTypes.getVerticalAlignmentId(nvl(vAlignment,'bottom'))     -- alcv (3 bits)
-               , b6 => 0  -- fWrap
+               , b6 => case when wrapText then 1 else 0 end  -- fWrap
                , b7 => 0  -- fJustLast
                )
     );
@@ -929,13 +931,14 @@ create or replace package body xutl_xlsb is
   
   function make_BuiltInStyle (
     builtInId  in pls_integer
-  , styleName  in varchar2 
+  , styleName  in varchar2
+  , xfId       in pls_integer 
   )
   return Record_T
   is
     rec  Record_T := new_record(BRT_STYLE);
   begin
-    write_record(rec, '00000000');            -- ixf
+    write_record(rec, int2raw(xfId));         -- ixf
     write_record(rec, '0100');                -- grbitObj1 : fBuiltIn=1
     write_record(rec, int2raw(builtInId,1));  -- iStyBuiltIn : Normal
     write_record(rec, 'FF');                  -- iLevel (ignored)
@@ -1021,6 +1024,38 @@ create or replace package body xutl_xlsb is
     
     -- no unusedstring1, description, helpTopic and unusedstring2 since fProc = 0
   
+    return rec;
+  end;
+  
+  function make_CalcProp (
+    calcId  in pls_integer
+  )
+  return Record_T
+  is
+    rec  Record_T := new_record(BRT_CALCPROP);
+  begin
+    write_record(rec, int2raw(calcId)); -- recalcID
+    write_record(rec, int2raw(1)); -- fAutoRecalc (auto)
+    write_record(rec, int2raw(100)); -- cCalcCount
+    write_record(rec, utl_raw.cast_from_binary_double(.001, utl_raw.little_endian)); -- xnumDelta
+    write_record(rec, int2raw(1)); -- cUserThreadCount
+    write_record(rec,
+      bitVector(
+        0 -- A: fFullCalcOnLoad
+      , 1 -- B: fRefA1
+      , 0 -- C: fIter
+      , 1 -- D: fFullPrec
+      , 0 -- E: fSomeUncalced 
+      , 1 -- F: fSaveRecalc
+      , 1 -- G: fMTREnabled
+      , 0 -- H: fUserSetThreadCount
+      )
+    );
+    write_record(rec,
+      bitVector(
+        0 -- I: fNoDeps
+      )
+    );
     return rec;
   end;
   
@@ -1441,11 +1476,12 @@ create or replace package body xutl_xlsb is
   procedure put_BuiltInStyle (
     stream     in out nocopy stream_t
   , builtInId  in pls_integer
-  , styleName  in varchar2 
+  , styleName  in varchar2
+  , xfId       in pls_integer
   )
   is
   begin
-    put_record(stream, make_BuiltInStyle(builtInId, styleName));
+    put_record(stream, make_BuiltInStyle(builtInId, styleName, xfId));
   end;
   
   procedure put_ExternSheet (
@@ -1477,6 +1513,15 @@ create or replace package body xutl_xlsb is
                , lastRow
                , lastCol
                ));
+  end;
+  
+  procedure put_CalcProp (
+    stream  in out nocopy stream_t
+  , calcId  in pls_integer
+  )
+  is
+  begin
+    put_record(stream, make_CalcProp(calcId));
   end;
 
   procedure put_WsProp (
@@ -1554,6 +1599,7 @@ create or replace package body xutl_xlsb is
   , borderId    in pls_integer default 0
   , hAlignment  in varchar2 default null
   , vAlignment  in varchar2 default null
+  , wrapText    in boolean default false
   )
   is
   begin
@@ -1566,6 +1612,7 @@ create or replace package body xutl_xlsb is
                , borderId
                , hAlignment
                , vAlignment
+               , wrapText
                ));    
   end;
 
@@ -1838,7 +1885,7 @@ create or replace package body xutl_xlsb is
     return sh;
   end;
 
-  /*
+  
   procedure read_all (file in blob) is
     stream  Stream_T;
     raw1    raw(1);
@@ -1864,6 +1911,7 @@ create or replace package body xutl_xlsb is
         )
       );
       
+      /*
       if stream.rt = BRT_XF then
         dbms_output.put_line('ixfeParent='||read_bytes(stream,2));
         dbms_output.put_line('iFmt='||raw2int(read_bytes(stream,2)));
@@ -1893,11 +1941,12 @@ create or replace package body xutl_xlsb is
         dbms_output.put_line('xfGrbitAtr.4='||raw2int(utl_raw.bit_and(raw1,'10'))/16);
         dbms_output.put_line('xfGrbitAtr.5='||raw2int(utl_raw.bit_and(raw1,'20'))/32);
       end if;
+      */
         
     end loop;
     close_stream(stream);
   end;
-  */
+  
 
   function get_sheetEntries (
     p_workbook  in blob

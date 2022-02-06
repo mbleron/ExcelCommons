@@ -31,6 +31,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2018-09-02     Multi-sheet support
     Marc Bleron       2020-03-01     Added cellNote attribute to ExcelTableCell
     Marc Bleron       2021-04-05     Added generation routines for ExcelGen
+    Marc Bleron       2021-09-04     Added fWrap attribute
 ====================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -164,7 +165,8 @@ create or replace package xutl_xlsb is
   procedure put_BuiltInStyle (
     stream     in out nocopy stream_t
   , builtInId  in pls_integer
-  , styleName  in varchar2 
+  , styleName  in varchar2
+  , xfId       in pls_integer
   );
 
   procedure put_FilterDatabase (
@@ -175,6 +177,11 @@ create or replace package xutl_xlsb is
   , firstCol       in pls_integer
   , lastRow        in pls_integer
   , lastCol        in pls_integer
+  );
+  
+  procedure put_CalcProp (
+    stream  in out nocopy stream_t
+  , calcId  in pls_integer
   );
 
   procedure put_WsProp (
@@ -224,6 +231,7 @@ create or replace package xutl_xlsb is
   , borderId    in pls_integer default 0
   , hAlignment  in varchar2 default null
   , vAlignment  in varchar2 default null
+  , wrapText    in boolean default false
   );
     
   function new_context (
@@ -254,6 +262,8 @@ create or replace package xutl_xlsb is
   , p_nrows   in pls_integer
   )
   return ExcelTableCellList;
+  
+  procedure read_all (file in blob);
 
 end xutl_xlsb;
 /

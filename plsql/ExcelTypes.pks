@@ -17,6 +17,7 @@ create or replace package ExcelTypes is
     name     varchar2(64)
   , b        boolean := false
   , i        boolean := false
+  , u        varchar2(16)
   , color    varchar2(8)
   , sz       pls_integer
   , content  varchar2(32767)
@@ -36,14 +37,17 @@ create or replace package ExcelTypes is
   type CT_CellAlignment is record (
     horizontal  varchar2(16)
   , vertical    varchar2(16)
+  , wrapText    boolean
   , content     varchar2(32767)
   );
   
+  function isValidUnderlineStyle (p_underlineStyle in varchar2) return boolean;
   function isValidPatternType (p_patternType in varchar2) return boolean;
   function isValidBorderStyle (p_borderStyle in varchar2) return boolean;
   function isValidHorizontalAlignment (p_hAlignment in varchar2) return boolean;
   function isValidVerticalAlignment (p_vAlignment in varchar2) return boolean;
   
+  function getUnderlineStyleId (p_underlineStyle in varchar2) return pls_integer;
   function getFillPatternTypeId (p_patternType in varchar2) return pls_integer;
   function getBorderStyleId (p_borderStyle in varchar2) return pls_integer;
   function getHorizontalAlignmentId (p_hAlignment in varchar2) return pls_integer;
