@@ -1885,7 +1885,7 @@ create or replace package body xutl_xlsb is
     return sh;
   end;
 
-  
+  /*
   procedure read_all (file in blob) is
     stream  Stream_T;
     raw1    raw(1);
@@ -1911,7 +1911,7 @@ create or replace package body xutl_xlsb is
         )
       );
       
-      /*
+      \*
       if stream.rt = BRT_XF then
         dbms_output.put_line('ixfeParent='||read_bytes(stream,2));
         dbms_output.put_line('iFmt='||raw2int(read_bytes(stream,2)));
@@ -1941,12 +1941,12 @@ create or replace package body xutl_xlsb is
         dbms_output.put_line('xfGrbitAtr.4='||raw2int(utl_raw.bit_and(raw1,'10'))/16);
         dbms_output.put_line('xfGrbitAtr.5='||raw2int(utl_raw.bit_and(raw1,'20'))/32);
       end if;
-      */
+      *\
         
     end loop;
     close_stream(stream);
   end;
-  
+  */
 
   function get_sheetEntries (
     p_workbook  in blob

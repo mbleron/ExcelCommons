@@ -262,8 +262,6 @@ create or replace package xutl_xlsb is
   , p_nrows   in pls_integer
   )
   return ExcelTableCellList;
-  
-  procedure read_all (file in blob);
 
 end xutl_xlsb;
 /
