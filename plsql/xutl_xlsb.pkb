@@ -21,6 +21,7 @@ create or replace package body xutl_xlsb is
   BRT_BORDER            constant pls_integer := 46;
   BRT_XF                constant pls_integer := 47;
   BRT_STYLE             constant pls_integer := 48;
+  BRT_COLINFO           constant pls_integer := 60;
   BRT_BEGINSHEET        constant pls_integer := 129;
   BRT_BEGINBOOKVIEWS    constant pls_integer := 135;
   BRT_ENDBOOKVIEWS      constant pls_integer := 136;
@@ -37,6 +38,8 @@ create or replace package body xutl_xlsb is
   BRT_BEGINAFILTER      constant pls_integer := 161;
   BRT_BEGINLIST         constant pls_integer := 343;
   BRT_BEGINLISTCOL      constant pls_integer := 347;
+  BRT_BEGINCOLINFOS     constant pls_integer := 390;
+  BRT_ENDCOLINFOS       constant pls_integer := 391;
   BRT_EXTERNSHEET       constant pls_integer := 362;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
   BRT_BEGINCOMMENTS     constant pls_integer := 628;
@@ -1285,6 +1288,31 @@ create or replace package body xutl_xlsb is
     
     return rec;
   end;
+
+  function make_ColInfo (
+    colId     in pls_integer
+  , colWidth  in pls_integer
+  )
+  return Record_T
+  is
+    rec  Record_T := new_record(BRT_COLINFO);
+  begin
+    write_record(rec, int2raw(colId));  -- colFirst
+    write_record(rec, int2raw(colId));  -- colLast
+    write_record(rec, int2raw(colWidth));  -- coldx
+    write_record(rec, '00000000');         -- ixfe
+    write_record(rec,
+      bitVector(
+        0  -- fHidden
+      , 1  -- fUserSet
+      , 0  -- fBestFit
+      , 0  -- fPhonetic
+      )
+    );
+    write_record(rec, '00'); -- iOutLevel, unused, fCollapsed, reserved2
+        
+    return rec;
+  end;
   
   function add_SupportingLink (
     links         in out nocopy SupportingLinks_T
@@ -1616,6 +1644,16 @@ create or replace package body xutl_xlsb is
                ));    
   end;
 
+  procedure put_ColInfo (
+    stream    in out nocopy stream_t
+  , colId     in pls_integer
+  , colWidth  in pls_integer
+  )
+  is
+  begin
+    put_record(stream, make_ColInfo(colId, colWidth));
+  end;
+
   -- convert a 0-based column number to base26 string
   function base26encode (colNum in pls_integer) 
   return varchar2
@@ -1885,8 +1923,8 @@ create or replace package body xutl_xlsb is
     return sh;
   end;
 
-  /*
-  procedure read_all (file in blob) is
+  
+  /*procedure read_all (file in blob) is
     stream  Stream_T;
     raw1    raw(1);
   begin
@@ -1945,8 +1983,8 @@ create or replace package body xutl_xlsb is
         
     end loop;
     close_stream(stream);
-  end;
-  */
+  end;*/
+  
 
   function get_sheetEntries (
     p_workbook  in blob

@@ -32,6 +32,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2020-03-01     Added cellNote attribute to ExcelTableCell
     Marc Bleron       2021-04-05     Added generation routines for ExcelGen
     Marc Bleron       2021-09-04     Added fWrap attribute
+    Marc Bleron       2022-02-15     Added ColInfo record
 ====================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -232,6 +233,12 @@ create or replace package xutl_xlsb is
   , hAlignment  in varchar2 default null
   , vAlignment  in varchar2 default null
   , wrapText    in boolean default false
+  );
+
+  procedure put_ColInfo (
+    stream    in out nocopy stream_t
+  , colId     in pls_integer
+  , colWidth  in pls_integer
   );
     
   function new_context (
