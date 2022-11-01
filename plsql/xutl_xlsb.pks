@@ -3,7 +3,7 @@ create or replace package xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2021 Marc Bleron
+  Copyright (c) 2018-2022 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,7 @@ create or replace package xutl_xlsb is
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 
-=========================================================================================
+==========================================================================================
     Change history :
     Marc Bleron       2018-04-02     Creation
     Marc Bleron       2018-08-23     Bug fix : no row returned if fetch_size (p_nrows)
@@ -33,7 +33,14 @@ create or replace package xutl_xlsb is
     Marc Bleron       2021-04-05     Added generation routines for ExcelGen
     Marc Bleron       2021-09-04     Added fWrap attribute
     Marc Bleron       2022-02-15     Added ColInfo record
-====================================================================================== */
+    Marc Bleron       2022-08-06     Bug fix: BrtBeginWsView.fSelected set to 1 by default
+                                     Added CodeInfo.ixfe
+                                     Added RowHdr.ixfe, miyRw
+                                     Added BrtBeginWsView.fDspGrid, fDspRwCol
+                                     Added BrtTableStyleClient flags A, B, C, D
+                                     Added BrtMergeCell
+                                     Added BrtWsFmtInfo
+========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
   type SheetEntries_T is table of SheetEntry_T;
@@ -74,8 +81,11 @@ create or replace package xutl_xlsb is
   );
   
   procedure put_RowHdr (
-    stream    in out nocopy stream_t
-  , rowIndex  in pls_integer
+    stream         in out nocopy stream_t
+  , rowIndex       in pls_integer
+  , height         in number
+  , styleRef       in pls_integer
+  , defaultHeight  in number default null
   );
   
   procedure put_BeginSst (
@@ -159,8 +169,12 @@ create or replace package xutl_xlsb is
   );
   
   procedure put_TableStyleClient (
-    stream          in out nocopy stream_t
-  , tableStyleName  in varchar2 
+    stream             in out nocopy stream_t
+  , tableStyleName     in varchar2 
+  , showFirstColumn    in boolean
+  , showLastColumn     in boolean
+  , showRowStripes     in boolean
+  , showColumnStripes  in boolean
   );
 
   procedure put_BuiltInStyle (
@@ -191,7 +205,9 @@ create or replace package xutl_xlsb is
   );
   
   procedure put_BeginWsView (
-    stream  in out nocopy stream_t 
+    stream    in out nocopy stream_t 
+  , dspGrid   in boolean
+  , dspRwCol  in boolean
   );
   
   procedure put_FrozenPane (
@@ -236,9 +252,24 @@ create or replace package xutl_xlsb is
   );
 
   procedure put_ColInfo (
+    stream         in out nocopy stream_t
+  , colId          in pls_integer
+  , colWidth       in pls_integer
+  , isCustomWidth  in boolean
+  , styleRef       in pls_integer
+  );
+
+  procedure put_MergeCell (
     stream    in out nocopy stream_t
-  , colId     in pls_integer
-  , colWidth  in pls_integer
+  , rwFirst   in pls_integer
+  , rwLast    in pls_integer
+  , colFirst  in pls_integer
+  , colLast   in pls_integer
+  );
+
+  procedure put_WsFmtInfo (
+    stream            in out nocopy stream_t
+  , defaultRowHeight  in number
   );
     
   function new_context (

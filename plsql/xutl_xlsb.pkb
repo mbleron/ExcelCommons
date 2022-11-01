@@ -36,11 +36,13 @@ create or replace package body xutl_xlsb is
   BRT_BOOKVIEW          constant pls_integer := 158;
   BRT_BEGINSST          constant pls_integer := 159;
   BRT_BEGINAFILTER      constant pls_integer := 161;
+  BRT_MERGECELL         constant pls_integer := 176;
   BRT_BEGINLIST         constant pls_integer := 343;
   BRT_BEGINLISTCOL      constant pls_integer := 347;
   BRT_BEGINCOLINFOS     constant pls_integer := 390;
   BRT_ENDCOLINFOS       constant pls_integer := 391;
   BRT_EXTERNSHEET       constant pls_integer := 362;
+  BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
   BRT_BEGINCOMMENTS     constant pls_integer := 628;
   BRT_ENDCOMMENTLIST    constant pls_integer := 634;
@@ -606,17 +608,24 @@ create or replace package body xutl_xlsb is
   end;
   
   function make_RowHdr (
-    rowIndex  in pls_integer
+    rowIndex       in pls_integer
+  , height         in number
+  , styleRef       in pls_integer
+  , defaultHeight  in number default null
   )
   return Record_T
   is
     rec  Record_T := new_record(BRT_ROWHDR);
   begin
-    write_record(rec, int2raw(rowIndex));  -- rw
-    write_record(rec, '00000000');         -- ixfe
-    write_record(rec, '2C01');             -- miyRw : 300 twips by default, although it should be ignored since fUnsynced=0
-    write_record(rec, '000000');           -- A,B, ... , reserved2
-    write_record(rec, '00000000');         -- ccolspan    
+    write_record(rec, int2raw(rowIndex));            -- rw
+    write_record(rec, int2raw(nvl(styleRef, 0)));    -- ixfe
+    write_record(rec, int2raw(coalesce(height, defaultHeight, 15)*20, 2));  -- miyRw: 300 twips by default
+    write_record(rec, '00');    -- A, B, reserved1
+    write_record(rec, bitVector( b5 => case when height is not null then 1 else 0 end    -- fUnsynced
+                               , b6 => case when styleRef is not null then 1 else 0 end  -- fGhostDirty 
+                               ));  
+    write_record(rec, '00');        -- I, reserved2
+    write_record(rec, '00000000');  -- ccolspan    
     return rec;
   end;
 
@@ -1110,7 +1119,10 @@ create or replace package body xutl_xlsb is
     return rec;
   end;
   
-  function make_BeginWsView
+  function make_BeginWsView (
+    dspGrid   in boolean
+  , dspRwCol  in boolean
+  )
   return Record_T
   is
     rec  Record_T := new_record(BRT_BEGINWSVIEW);
@@ -1119,11 +1131,11 @@ create or replace package body xutl_xlsb is
       bitVector(
         0  -- fWnProt
       , 0  -- fDspFmla
-      , 1  -- fDspGrid
-      , 1  -- fDspRwCol
+      , case when not dspGrid then 0 else 1 end   -- fDspGrid
+      , case when not dspRwCol then 0 else 1 end  -- fDspRwCol
       , 1  -- fDspZeros
       , 0  -- fRightToLeft
-      , 1  -- fSelected
+      , 0  -- fSelected
       , 1  -- fDspRuler
       )
     );
@@ -1262,7 +1274,11 @@ create or replace package body xutl_xlsb is
   end;
   
   function make_TableStyleClient (
-    tableStyleName  in varchar2
+    tableStyleName     in varchar2
+  , showFirstColumn    in boolean
+  , showLastColumn     in boolean
+  , showRowStripes     in boolean
+  , showColumnStripes  in boolean
   )
   return Record_T
   is
@@ -1270,10 +1286,10 @@ create or replace package body xutl_xlsb is
   begin
     write_record(rec, 
       bitVector(
-        0  -- fFirstColumn
-      , 0  -- fLastColumn
-      , 1  -- fRowStripes
-      , 0  -- fColumnStripes
+        case when showFirstColumn then 1 else 0 end  -- fFirstColumn
+      , case when showLastColumn then 1 else 0 end   -- fLastColumn
+      , case when showRowStripes then 1 else 0 end   -- fRowStripes
+      , case when showColumnStripes then 1 else 0 end  -- fColumnStripes
       , 0  -- fRowHeaders
       , 0  --fColumnHeaders
       )
@@ -1290,8 +1306,10 @@ create or replace package body xutl_xlsb is
   end;
 
   function make_ColInfo (
-    colId     in pls_integer
-  , colWidth  in pls_integer
+    colId          in pls_integer
+  , colWidth       in pls_integer
+  , isCustomWidth  in boolean
+  , styleRef       in pls_integer
   )
   return Record_T
   is
@@ -1299,18 +1317,57 @@ create or replace package body xutl_xlsb is
   begin
     write_record(rec, int2raw(colId));  -- colFirst
     write_record(rec, int2raw(colId));  -- colLast
-    write_record(rec, int2raw(colWidth));  -- coldx
-    write_record(rec, '00000000');         -- ixfe
+    write_record(rec, int2raw(colWidth * 256));  -- coldx
+    write_record(rec, int2raw(styleRef));  -- ixfe
     write_record(rec,
       bitVector(
         0  -- fHidden
-      , 1  -- fUserSet
+      , case when isCustomWidth then 1 else 0 end  -- fUserSet
       , 0  -- fBestFit
       , 0  -- fPhonetic
       )
     );
     write_record(rec, '00'); -- iOutLevel, unused, fCollapsed, reserved2
         
+    return rec;
+  end;
+
+  function make_MergeCell (
+    rwFirst   in pls_integer
+  , rwLast    in pls_integer
+  , colFirst  in pls_integer
+  , colLast   in pls_integer
+  )
+  return Record_T
+  is
+    rec  Record_T := new_record(BRT_MERGECELL);
+  begin
+    write_record(rec, int2raw(rwFirst));
+    write_record(rec, int2raw(rwLast));
+    write_record(rec, int2raw(colFirst));
+    write_record(rec, int2raw(colLast));
+    return rec;
+  end;
+
+  function make_WsFmtInfo (
+    defaultRowHeight  in number
+  )
+  return Record_T
+  is
+    rec  Record_T := new_record(BRT_WSFMTINFO);
+  begin
+    write_record(rec, 'FFFFFFFF'); -- dxGCol
+    write_record(rec, int2raw(10, 2)); -- cchDefColWidth
+    write_record(rec, int2raw(nvl(defaultRowHeight, 15)*20, 2)); -- miyDefRwHeight
+    write_record(rec
+               , bitVector(
+                   case when defaultRowHeight is not null then 1 else 0 end  -- fUnsynced
+                 , 0  -- fDyZero
+                 , 0  -- fExAsc
+                 , 0  -- fExDesc
+                 ) );
+    write_record(rec, '00'); -- reserved
+    write_record(rec, '0000'); -- iOutLevelRw, iOutLevelCol 
     return rec;
   end;
   
@@ -1331,12 +1388,15 @@ create or replace package body xutl_xlsb is
   end;
   
   procedure put_RowHdr (
-    stream    in out nocopy stream_t
-  , rowIndex  in pls_integer
+    stream         in out nocopy stream_t
+  , rowIndex       in pls_integer
+  , height         in number
+  , styleRef       in pls_integer
+  , defaultHeight  in number default null
   )
   is
   begin
-    put_record(stream, make_RowHdr(rowIndex));
+    put_record(stream, make_RowHdr(rowIndex, height, styleRef, defaultHeight));
   end;
 
   procedure put_CellNumber (
@@ -1493,12 +1553,21 @@ create or replace package body xutl_xlsb is
   end;
   
   procedure put_TableStyleClient (
-    stream          in out nocopy stream_t
-  , tableStyleName  in varchar2 
+    stream             in out nocopy stream_t
+  , tableStyleName     in varchar2
+  , showFirstColumn    in boolean
+  , showLastColumn     in boolean
+  , showRowStripes     in boolean
+  , showColumnStripes  in boolean
   )
   is
   begin
-    put_record(stream, make_TableStyleClient(tableStyleName));
+    put_record( stream
+              , make_TableStyleClient( tableStyleName
+                                     , showFirstColumn
+                                     , showLastColumn
+                                     , showRowStripes
+                                     , showColumnStripes ) );
   end;
 
   procedure put_BuiltInStyle (
@@ -1562,11 +1631,13 @@ create or replace package body xutl_xlsb is
   end;
 
   procedure put_BeginWsView (
-    stream  in out nocopy stream_t 
+    stream    in out nocopy stream_t 
+  , dspGrid   in boolean
+  , dspRwCol  in boolean
   )
   is
   begin
-    put_record(stream, make_BeginWsView());
+    put_record(stream, make_BeginWsView(dspGrid, dspRwCol));
   end;
 
   procedure put_FrozenPane (
@@ -1645,13 +1716,36 @@ create or replace package body xutl_xlsb is
   end;
 
   procedure put_ColInfo (
-    stream    in out nocopy stream_t
-  , colId     in pls_integer
-  , colWidth  in pls_integer
+    stream         in out nocopy stream_t
+  , colId          in pls_integer
+  , colWidth       in pls_integer
+  , isCustomWidth  in boolean
+  , styleRef       in pls_integer
   )
   is
   begin
-    put_record(stream, make_ColInfo(colId, colWidth));
+    put_record(stream, make_ColInfo(colId, colWidth, isCustomWidth, styleRef));
+  end;
+
+  procedure put_MergeCell (
+    stream    in out nocopy stream_t
+  , rwFirst   in pls_integer
+  , rwLast    in pls_integer
+  , colFirst  in pls_integer
+  , colLast   in pls_integer
+  )
+  is
+  begin
+    put_record(stream, make_MergeCell(rwFirst, rwLast, colFirst, colLast));
+  end;
+
+  procedure put_WsFmtInfo (
+    stream            in out nocopy stream_t
+  , defaultRowHeight  in number
+  )
+  is
+  begin
+    put_record(stream, make_WsFmtInfo(defaultRowHeight));
   end;
 
   -- convert a 0-based column number to base26 string
@@ -1788,18 +1882,6 @@ create or replace package body xutl_xlsb is
       nm := nm/100;
     end if;
     
-    /*
-    dbms_output.put_line(
-      utl_lms.format_message(
-        '%s BrtCellRk   fX100=%d fInt=%d 0x%s'
-      , rpad(to_char(nm),20)
-      , case when rk.fX100 then 1 else 0 end
-      , case when rk.fInt then 1 else 0 end
-      , rawtohex(rk.RkNumber)
-      )
-    );
-    */
-    
     return nm;
   end;
   
@@ -1809,15 +1891,6 @@ create or replace package body xutl_xlsb is
     Xnum  raw(8);
   begin
     Xnum := read_bytes(stream, 8);
-    /*
-    dbms_output.put_line(
-      utl_lms.format_message(
-        '%s BrtCellReal 0x%s'
-      , rpad(to_char(to_number(utl_raw.cast_to_binary_double(Xnum, utl_raw.little_endian))),20)
-      , rawtohex(Xnum)
-      )
-    );
-    */
     return to_number(utl_raw.cast_to_binary_double(Xnum, utl_raw.little_endian));
   end;
 
@@ -1923,8 +1996,8 @@ create or replace package body xutl_xlsb is
     return sh;
   end;
 
-  
-  /*procedure read_all (file in blob) is
+  /*
+  procedure read_all (file in blob) is
     stream  Stream_T;
     raw1    raw(1);
   begin
@@ -1983,8 +2056,8 @@ create or replace package body xutl_xlsb is
         
     end loop;
     close_stream(stream);
-  end;*/
-  
+  end;
+  */
 
   function get_sheetEntries (
     p_workbook  in blob
