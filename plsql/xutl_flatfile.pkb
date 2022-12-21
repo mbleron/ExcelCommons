@@ -252,11 +252,17 @@ create or replace package body xutl_flatfile is
   is
     amount  pls_integer := 384;
   begin
-    dbms_lob.read(stream.content, amount, stream.offset, buf.content);
-    stream.offset := stream.offset + amount;
-    stream.available := stream.available - amount;
-    buf.sz := amount;
-    buf.offset := 1;
+    if stream.available != 0 then
+      dbms_lob.read(stream.content, amount, stream.offset, buf.content);
+      stream.offset := stream.offset + amount;
+      stream.available := stream.available - amount;
+      buf.sz := amount;
+      buf.offset := 1;
+    else
+      buf.content := null;
+      buf.sz := 0;
+      buf.offset := null;
+    end if;
   end;
   
   function read_fields (
@@ -287,6 +293,8 @@ create or replace package body xutl_flatfile is
     lt_chunk          varchar2(2);
     lt_chunk_sz       pls_integer;
     lt_chunk_tail_sz  pls_integer;
+    
+    at_eol            boolean := false;
     
     USE_TEXT_QUALIFIER  constant boolean := (fd.text_qualifier is not null);
 
@@ -326,6 +334,9 @@ create or replace package body xutl_flatfile is
   begin
     
     field.id := 0;
+    if buf.content is null then
+      bufferize(stream, buf);
+    end if;
 
     loop 
       
@@ -349,15 +360,27 @@ create or replace package body xutl_flatfile is
               
             if buf.offset > buf.sz then
               bufferize(stream, buf);
-            end if;
-            -- check whether tq found is an escape character
+              if buf.sz = 0 then
+                -- EOF has been reached
+                ctx_cache(ctx_id).done := true;
+                exit;
+              end if;
+            end if;      
+            
+            -- check whether tq found was an escape character
             if substr(buf.content, buf.offset, 1) = fd.text_qualifier then
               --tq found was an escape character
               field.str_value := field.str_value || fd.text_qualifier;
+              field.sz := field.sz + 1;
               buf.offset := buf.offset + 1;
               if buf.offset > buf.sz then
                 bufferize(stream, buf);
+                if buf.sz = 0 then
+                  -- EOF has been reached without terminating the current field
+                  error(-20742, 'Unexpected EOF');
+                end if;
               end if;
+              
             elsif substr(buf.content, buf.offset, 1) = fd.field_separator then
               --tq found was this field's end delimiter
               buf.offset := buf.offset + 1;
@@ -365,20 +388,50 @@ create or replace package body xutl_flatfile is
                 bufferize(stream, buf);
               end if;
               exit;
+              
+            elsif substr(buf.content, buf.offset, 1) = substr(fd.line_terminator,1,1) then
+              if LT_SZ > 1 then
+                buf.offset := buf.offset + 1;
+                if buf.offset > buf.sz then
+                  bufferize(stream, buf);
+                  if buf.sz = 0 then
+                    -- EOF has been reached without terminating the current field
+                    error(-20742, 'Unexpected EOF');
+                  end if;
+                end if;
+                if substr(buf.content, buf.offset, 1) != substr(fd.line_terminator,2,1) then
+                  error(-20742, 'Bad line terminator');
+                end if;
+              end if;
+              
+              buf.offset := buf.offset + 1;
+              --next_line;
+              at_eol := true;
+              exit;
+              
             else
               error(-20742, 'Bad escape sequence');
             end if;
               
           else
               
-            field.str_value := field.str_value || substr(buf.content, field.start_offset);
+            field.end_offset := buf.sz;
+            read_field;
             bufferize(stream, buf);
+            if buf.sz = 0 then
+              -- EOF has been reached without terminating the current field
+              error(-20742, 'Unexpected EOF');
+            end if;
             
           end if;
           
         end loop;
         
         add_field;
+        if at_eol then
+          next_line;
+          at_eol := false;
+        end if;
       
       else
       
@@ -445,14 +498,15 @@ create or replace package body xutl_flatfile is
               add_field;
             end if;
             ctx_cache(ctx_id).done := true;
-            exit;
+            --exit;
           end if;
           
         end if;
         
       end if;
       
-      exit when r_cnt >= nrows;
+      --exit when r_cnt >= nrows;
+      exit when r_cnt >= nrows or ctx_cache(ctx_id).done;
     
     end loop;
     

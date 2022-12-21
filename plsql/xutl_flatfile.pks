@@ -26,7 +26,7 @@ create or replace package xutl_flatfile is
 =========================================================================================
     Change history :
     Marc Bleron       2019-05-21     Creation
-
+    Marc Bleron       2022-11-15     Various fixes in read_fields function
 ====================================================================================== */
 
   -- Flat File constants
