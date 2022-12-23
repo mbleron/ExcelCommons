@@ -158,6 +158,20 @@ create or replace package body xutl_xlsb is
   
   debug_mode       boolean := false;
   MAX_STRING_SIZE  pls_integer;
+  
+  procedure loadRecordTypeLabels is
+    rc    sys_refcursor;
+    rt    pls_integer;
+    name  varchar2(128);
+  begin
+    open rc for 'select rt, name from xlsb_record_types';
+    loop
+      fetch rc into rt, name;
+      exit when rc%notfound;
+      recordTypeLabelMap(rt) := name;
+    end loop;
+    close rc;
+  end;
 
   function raw2int (r in raw) return binary_integer
   is
@@ -818,7 +832,7 @@ create or replace package body xutl_xlsb is
   is
     rec  Record_T := new_record(BRT_FONT);
   begin
-    write_record(rec, int2raw(font.sz * 20, 2));  -- dyHeight : font size in twips (1 twip = 1/20th pt)
+    write_record(rec, int2raw(nvl(font.sz, ExcelTypes.DEFAULT_FONT_SIZE) * 20, 2));  -- dyHeight : font size in twips (1 twip = 1/20th pt)
     -- grbit
     write_record(rec, int2raw( case when font.i then 2 else 0 end  -- bit1 : fItalic
                                , 2 ));
@@ -830,7 +844,7 @@ create or replace package body xutl_xlsb is
     write_record(rec, '00');    -- unused
     write_record(rec, make_BrtColor(font.color));
     write_record(rec, '00');    -- bFontScheme : None
-    write_XLString(rec, font.name);  -- name
+    write_XLString(rec, nvl(font.name, ExcelTypes.DEFAULT_FONT_FAMILY));  -- name
   
     return rec;
   end;
@@ -854,6 +868,31 @@ create or replace package body xutl_xlsb is
                                     , '00000000'          -- cNumStop
                                     ) );
     
+    return rec;
+  end;
+
+  function make_GradientFill (
+    gradientFill  in ExcelTypes.CT_GradientFill
+  )
+  return Record_T
+  is
+    rec  Record_T := new_record(BRT_FILL);
+  begin
+    write_record(rec, '00000028');  -- fls
+    write_record(rec, '0000000000000000');  -- BrtColorFore
+    write_record(rec, '0000000000000000');  -- BrtColorBack
+    write_record(rec, '00000000');          -- iGradientType: linear
+    write_record(rec, utl_raw.cast_from_binary_double(gradientFill.degree, utl_raw.little_endian)); -- xnumDegree
+    write_record(rec, '0000000000000000');  -- xnumFillToLeft
+    write_record(rec, '0000000000000000');  -- xnumFillToRight
+    write_record(rec, '0000000000000000');  -- xnumFillToTop
+    write_record(rec, '0000000000000000');  -- xnumFillToBottom
+    write_record(rec, int2raw(gradientFill.stops.count));  -- cNumStop
+    -- GradientStop array:
+    for i in 1 .. gradientFill.stops.count loop
+      write_record(rec, make_BrtColor(gradientFill.stops(i).color));  -- GradientStop.brtColor
+      write_record(rec, utl_raw.cast_from_binary_double(gradientFill.stops(i).position, utl_raw.little_endian));  -- GradientStop.xnumPosition
+    end loop;   
     return rec;
   end;
   
@@ -1307,7 +1346,7 @@ create or replace package body xutl_xlsb is
 
   function make_ColInfo (
     colId          in pls_integer
-  , colWidth       in pls_integer
+  , colWidth       in number
   , isCustomWidth  in boolean
   , styleRef       in pls_integer
   )
@@ -1673,11 +1712,34 @@ create or replace package body xutl_xlsb is
 
   procedure put_PatternFill (
     stream       in out nocopy stream_t
-  , patternfill  in ExcelTypes.CT_PatternFill
+  , patternFill  in ExcelTypes.CT_PatternFill
   )
   is
   begin
     put_record(stream, make_PatternFill(patternFill));
+  end;
+
+  procedure put_GradientFill (
+    stream        in out nocopy stream_t
+  , gradientFill  in ExcelTypes.CT_GradientFill
+  )
+  is
+  begin
+    put_record(stream, make_GradientFill(gradientFill));
+  end;
+
+  procedure put_Fill (
+    stream  in out nocopy stream_t
+  , fill    in ExcelTypes.CT_Fill
+  )
+  is
+  begin
+    case fill.fillType
+    when ExcelTypes.FT_PATTERN then
+      put_PatternFill(stream, fill.patternFill);
+    when ExcelTypes.FT_GRADIENT then
+      put_GradientFill(stream, fill.gradientFill);
+    end case;
   end;
 
   procedure put_Border (
@@ -1718,7 +1780,7 @@ create or replace package body xutl_xlsb is
   procedure put_ColInfo (
     stream         in out nocopy stream_t
   , colId          in pls_integer
-  , colWidth       in pls_integer
+  , colWidth       in number
   , isCustomWidth  in boolean
   , styleRef       in pls_integer
   )
@@ -1995,16 +2057,13 @@ create or replace package body xutl_xlsb is
     debug(sh.strName);
     return sh;
   end;
-
-  /*
+  
   procedure read_all (file in blob) is
     stream  Stream_T;
-    raw1    raw(1);
+    --raw1    raw(1);
   begin
   
-    for r in (select rt, name from xlsb_record_types) loop
-      recordTypeLabelMap(r.rt) := r.name;
-    end loop;
+    loadRecordTypeLabels;
   
     stream := open_stream(file);
 
@@ -2022,7 +2081,7 @@ create or replace package body xutl_xlsb is
         )
       );
       
-      \*
+      /*
       if stream.rt = BRT_XF then
         dbms_output.put_line('ixfeParent='||read_bytes(stream,2));
         dbms_output.put_line('iFmt='||raw2int(read_bytes(stream,2)));
@@ -2052,12 +2111,11 @@ create or replace package body xutl_xlsb is
         dbms_output.put_line('xfGrbitAtr.4='||raw2int(utl_raw.bit_and(raw1,'10'))/16);
         dbms_output.put_line('xfGrbitAtr.5='||raw2int(utl_raw.bit_and(raw1,'20'))/32);
       end if;
-      *\
+      */
         
     end loop;
     close_stream(stream);
   end;
-  */
 
   function get_sheetEntries (
     p_workbook  in blob

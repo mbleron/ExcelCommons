@@ -40,6 +40,7 @@ create or replace package xutl_xlsb is
                                      Added BrtTableStyleClient flags A, B, C, D
                                      Added BrtMergeCell
                                      Added BrtWsFmtInfo
+    Marc Bleron       2022-11-04     Added gradientFill
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -231,7 +232,12 @@ create or replace package xutl_xlsb is
   
   procedure put_PatternFill (
     stream       in out nocopy stream_t
-  , patternfill  in ExcelTypes.CT_PatternFill
+  , patternFill  in ExcelTypes.CT_PatternFill
+  );
+
+  procedure put_Fill (
+    stream  in out nocopy stream_t
+  , fill    in ExcelTypes.CT_Fill
   );
   
   procedure put_Border (
@@ -254,7 +260,7 @@ create or replace package xutl_xlsb is
   procedure put_ColInfo (
     stream         in out nocopy stream_t
   , colId          in pls_integer
-  , colWidth       in pls_integer
+  , colWidth       in number
   , isCustomWidth  in boolean
   , styleRef       in pls_integer
   );

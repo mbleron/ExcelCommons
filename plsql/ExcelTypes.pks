@@ -28,10 +28,13 @@ create or replace package ExcelTypes is
     Marc Bleron       2021-05-23     Creation
     Marc Bleron       2021-09-04     Added wrapText attribute, and font underline
     Marc Bleron       2022-09-03     Added CSS features
+    Marc Bleron       2022-11-04     Added gradientFill
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
   DEFAULT_FONT_SIZE     constant number := 11; -- points
+  FT_PATTERN            constant pls_integer := 0;
+  FT_GRADIENT           constant pls_integer := 1;
 
   subtype uint8 is pls_integer range 0..255;
 
@@ -49,12 +52,12 @@ create or replace package ExcelTypes is
   );
   
   type CT_Font is record (
-    name     varchar2(64) := DEFAULT_FONT_FAMILY
+    name     varchar2(64)/* := DEFAULT_FONT_FAMILY*/
   , b        boolean := false
   , i        boolean := false
   , u        varchar2(16)
   , color    varchar2(8)
-  , sz       pls_integer := DEFAULT_FONT_SIZE
+  , sz       pls_integer/* := DEFAULT_FONT_SIZE*/
   , content  varchar2(32767)
   );
 
@@ -63,10 +66,24 @@ create or replace package ExcelTypes is
   , fgColor      varchar2(8)
   , bgColor      varchar2(8)
   );
+  
+  type CT_GradientStop is record (
+    position  number
+  , color     varchar2(8)
+  );
+
+  type CT_GradientStopList is table of CT_GradientStop;
+  
+  type CT_GradientFill is record (
+    degree  number
+  , stops   CT_GradientStopList
+  );
 
   type CT_Fill is record (
-    patternFill  CT_PatternFill
-  , content      varchar2(32767)
+    patternFill   CT_PatternFill
+  , gradientFill  CT_GradientFill
+  , content       varchar2(32767)
+  , fillType      pls_integer
   );
   
   type CT_CellAlignment is record (
@@ -139,6 +156,24 @@ create or replace package ExcelTypes is
   )
   return CT_Fill;
 
+  function makeGradientStop (
+    p_position  in number
+  , p_color     in varchar2
+  )
+  return CT_GradientStop;
+  
+  function makeGradientFill (
+    p_degree  in number default null
+  , p_stops   in CT_GradientStopList default null
+  )
+  return CT_Fill;
+
+  procedure addGradientStop (
+    p_fill      in out nocopy CT_Fill
+  , p_position  in number
+  , p_color     in varchar2
+  );
+
   function makeAlignment (
     p_horizontal  in varchar2 default null
   , p_vertical    in varchar2 default null
@@ -151,9 +186,13 @@ create or replace package ExcelTypes is
   function mergePatternFills (masterFill in CT_Fill, fill in CT_Fill) return CT_Fill;
   function mergeAlignments (masterAlignment in CT_CellAlignment, alignment in CT_CellAlignment) return CT_CellAlignment;
   
+  function applyBorderSide (border in CT_Border, top in boolean, right in boolean, bottom in boolean, left in boolean) return CT_Border;
+  
   function getStyleFromCss (cssString in varchar2) return CT_Style;
   
   procedure testCss (cssString in varchar2);
+  
+  procedure setDebug (p_status in boolean);
 
 end;
 /

@@ -19,7 +19,7 @@ create or replace package body ExcelTypes is
   'skyblue:87CEEB;slateblue:6A5ACD;slategray:708090;slategrey:708090;snow:FFFAFA;springgreen:00FF7F;tan:D2B48C;teal:008080;thistle:D8BFD8;tomato:FF6347;' ||
   'turquoise:40E0D0;violet:EE82EE;wheat:F5DEB3;white:FFFFFF;steelblue:4682B4;whitesmoke:F5F5F5;yellow:FFFF00;yellowgreen:9ACD32';
   
-  DEFAULT_FONT_SIZE_PT  constant varchar2(256) := to_char(DEFAULT_FONT_SIZE, 'TM9', 'nls_numeric_characters=''. ''')||'pt';
+  --DEFAULT_FONT_SIZE_PT  constant varchar2(256) := to_char(DEFAULT_FONT_SIZE, 'TM9', 'nls_numeric_characters=''. ''')||'pt';
 
   type simpleTypeMap_t is table of pls_integer index by varchar2(16);
 
@@ -63,32 +63,34 @@ create or replace package body ExcelTypes is
   , cn       pls_integer -- column number
   , last_cn  pls_integer -- last column number of previous line
   );
-  
-  --type tokenIdList_t is table of pls_integer;
-  type serializedToken_t is varray(6) of varchar2(256);
-  type serializedTokenList_t is table of serializedToken_t;
-  
+    
   type token_t is record (
     t     pls_integer
   , v     varchar2(256)
   , nv    number
   , u     varchar2(256)
-  , args  serializedTokenList_t
+  --, args  serializedTokenList_t
+  , argListId  pls_integer
   , pos   pos_t
   );
   
   type tokenList_t is table of token_t;
+  type tokenListMap_t is table of tokenList_t index by pls_integer;
   type component_t is record (token token_t, tokenList tokenList_t, isList boolean := false);
   type componentList_t is table of component_t;
-  type declaration_t is record (name varchar2(256), v componentList_t);
+  type declaration_t is record (name varchar2(256), v componentList_t, argListMap tokenListMap_t);
   type declarationList_t is table of declaration_t;
   
   type rgbColor_t is record (r pls_integer, g pls_integer, b pls_integer, a number);
   type cssBorderSide_t is record (style varchar2(256) := 'none', width varchar2(256) := 'medium', color varchar2(256));
   type cssBorder_t is record (top cssBorderSide_t, right cssBorderSide_t, bottom cssBorderSide_t, left cssBorderSide_t);
-  type cssFont_t is record (family varchar2(256) := DEFAULT_FONT_FAMILY, sz varchar2(256) := DEFAULT_FONT_SIZE_PT, style varchar2(256) := 'normal', weight varchar2(256) := 'normal');
+  type cssFont_t is record (family varchar2(256)/* := DEFAULT_FONT_FAMILY*/, sz varchar2(256)/* := DEFAULT_FONT_SIZE_PT*/, style varchar2(256) := 'normal', weight varchar2(256) := 'normal');
   type cssTextDecoration_t is record (line varchar2(256) := 'none', style varchar2(256) := 'solid');
   type cssMsoPattern_t is record (patternType varchar2(256) := 'none', color varchar2(256));
+  
+  type colorStop_t is record (colorHint number, color varchar2(256), pct1 number, pct2 number);
+  type colorStopList_t is table of colorStop_t;
+  type linearGradient_t is record (angle number, colorStopList colorStopList_t);
   
   type cssStyle_t is record (
     border           cssBorder_t
@@ -101,7 +103,10 @@ create or replace package body ExcelTypes is
   , msoNumberFormat  varchar2(256)
   , color            varchar2(256)
   , backgroundColor  varchar2(256)
+  , backgroundImage  linearGradient_t
   );
+  
+  functionArgListCache  tokenListMap_t;
   
   -- END CSS parser constants & structures
   
@@ -111,6 +116,22 @@ create or replace package body ExcelTypes is
   borderStyleMap     simpleTypeMap_t;
   hAlignmentMap      simpleTypeMap_t;
   vAlignmentMap      simpleTypeMap_t;
+  
+  debug_enabled  boolean := false;
+  
+  procedure setDebug (p_status in boolean)
+  is
+  begin
+    debug_enabled := nvl(p_status, false);
+  end;
+
+  procedure debug (message in varchar2)
+  is
+  begin
+    if debug_enabled then
+      dbms_output.put_line(message);
+    end if;
+  end;
 
   procedure loadCssTokenLabels is
   begin
@@ -128,6 +149,7 @@ create or replace package body ExcelTypes is
     cssTokenLabels(T_SEMICOLON) := 'semicolon-token';
     cssTokenLabels(T_LEFT) := 'left-parenthesis-token';
     cssTokenLabels(T_RIGHT) := 'right-parenthesis-token';
+    cssTokenLabels(T_FUNCTION) := 'function-token';
   end;
   
   procedure initColorMap 
@@ -234,30 +256,6 @@ create or replace package body ExcelTypes is
   begin
     raise_application_error(-20000, utl_lms.format_message(msg, arg1, arg2, arg3, arg4));
   end;
-  
-  function serializeToken (token in token_t) return serializedToken_t is
-    serializedToken  serializedToken_t := serializedToken_t(null,null,null,null,null,null);
-  begin
-    serializedToken(1) := to_char(token.t);
-    serializedToken(2) := token.v;
-    serializedToken(3) := to_char(token.nv);
-    serializedToken(4) := token.u;
-    serializedToken(5) := to_char(token.pos.ln);
-    serializedToken(6) := to_char(token.pos.cn);
-    return serializedToken;
-  end;
-
-  function deserializeToken (serializedToken in serializedToken_t) return token_t is
-    token  token_t;
-  begin
-    token.t := to_number(serializedToken(1));
-    token.v := serializedToken(2);
-    token.nv := to_number(serializedToken(3));
-    token.u := serializedToken(4);
-    token.pos.ln := to_number(serializedToken(5));
-    token.pos.cn := to_number(serializedToken(6));
-    return token;
-  end;
 
   function isValidColorCode (p_colorCode in varchar2) return boolean is
   begin
@@ -311,15 +309,42 @@ create or replace package body ExcelTypes is
     end if;
     return to_char(r * 65536 + g * 256 + b, 'FM0XXXXX')||to_char(a*255, 'FM0X');
   end;
+
+  function makeRgbColor (color in rgbColor_t) return varchar2 is
+  begin
+    return makeRgbColor(color.r, color.g, color.b, color.a);
+  end;
+
+  -- blend optional alpha channel with opaque white background
+  procedure blendRgbAlpha (color in out nocopy rgbColor_t) is
+  begin
+    if color.a < 1 then
+      color.r := (1 - color.a)*255 + color.a * color.r;
+      color.g := (1 - color.a)*255 + color.a * color.g;
+      color.b := (1 - color.a)*255 + color.a * color.b;
+    end if;
+    color.a := null;
+  end;
   
-  function parseRgbColor (rgbCode in varchar2) return rgbColor_t is
+  function parseRgbColor (rgbCode in varchar2, blendAlpha in boolean default false) return rgbColor_t is
     color  rgbColor_t;
   begin
     color.r := to_number(substr(rgbCode,1,2),'XX');
     color.g := to_number(substr(rgbCode,3,2),'XX');
     color.b := to_number(substr(rgbCode,5,2),'XX');
     color.a := to_number(substr(rgbCode,7,2),'XX')/255;
+    if blendAlpha then
+      blendRgbAlpha(color);
+    end if;
     return color;
+  end;
+
+  -- mix two RGBA colors
+  function mixRgbColor (rgb1 in varchar2, rgb2 in varchar2) return varchar2 is
+    c1  rgbColor_t := parseRgbColor(rgb1, true);
+    c2  rgbColor_t := parseRgbColor(rgb2, true);
+  begin
+    return makeRgbColor((c1.r + c2.r)/2, (c1.g + c2.g)/2, (c1.b + c2.b)/2);
   end;
 
   function validateColor (
@@ -327,7 +352,6 @@ create or replace package body ExcelTypes is
   )
   return varchar2
   is
-    color    rgbColor_t;
     rgbCode  varchar2(8);
   begin
     if colorSpec is not null then
@@ -339,10 +363,7 @@ create or replace package body ExcelTypes is
         end if;
         -- blend optional alpha channel with white background
         if length(rgbCode) = 8 then
-          color := parseRgbColor(rgbCode);
-          rgbCode := makeRgbColor((1-color.a)*255 + color.a*color.r
-                                , (1-color.a)*255 + color.a*color.g
-                                , (1-color.a)*255 + color.a*color.b);
+          rgbCode := makeRgbColor(parseRgbColor(rgbCode, true));
         end if;
         -- opaque by default
         rgbCode := 'FF' || rgbCode;
@@ -451,8 +472,8 @@ create or replace package body ExcelTypes is
   begin
     font.content := null;
     stringWrite(font.content, '<font>');
-    stringWrite(font.content, '<sz val="'||to_char(font.sz)||'"/>');
-    stringWrite(font.content, '<name val="'||font.name||'"/>');
+    stringWrite(font.content, '<sz val="'||to_char(nvl(font.sz, DEFAULT_FONT_SIZE))||'"/>');
+    stringWrite(font.content, '<name val="'||nvl(font.name, DEFAULT_FONT_FAMILY)||'"/>');
     if font.b then
       stringWrite(font.content, '<b/>');
     end if;
@@ -476,14 +497,31 @@ create or replace package body ExcelTypes is
   is
   begin
     fill.content := null;
-    stringWrite(fill.content, '<fill><patternFill patternType="'||fill.patternFill.patternType||'">');
-    if fill.patternFill.fgColor is not null then
-      stringWrite(fill.content, '<fgColor rgb="'||fill.patternFill.fgColor||'"/>');
-    end if;
-    if fill.patternFill.bgColor is not null then
-      stringWrite(fill.content, '<bgColor rgb="'||fill.patternFill.bgColor||'"/>');
-    end if;
-    stringWrite(fill.content, '</patternFill></fill>');
+    case fill.fillType
+    when FT_PATTERN then
+      
+      stringWrite(fill.content, '<fill><patternFill patternType="'||fill.patternFill.patternType||'">');
+      if fill.patternFill.fgColor is not null then
+        stringWrite(fill.content, '<fgColor rgb="'||fill.patternFill.fgColor||'"/>');
+      end if;
+      if fill.patternFill.bgColor is not null then
+        stringWrite(fill.content, '<bgColor rgb="'||fill.patternFill.bgColor||'"/>');
+      end if;
+      stringWrite(fill.content, '</patternFill></fill>');
+      
+    when FT_GRADIENT then
+      
+      stringWrite(fill.content, '<fill><gradientFill degree="'||to_char(nvl(fill.gradientFill.degree,0), 'TM9', 'nls_numeric_characters=''. ''')||'">');
+      for i in 1 .. fill.gradientFill.stops.count loop
+        stringWrite(fill.content, '<stop position="'||to_char(fill.gradientFill.stops(i).position, 'TM9', 'nls_numeric_characters=''. ''')||'">');
+        stringWrite(fill.content, '<color rgb="'||fill.gradientFill.stops(i).color||'"/>');
+        stringWrite(fill.content, '</stop>');
+      end loop;
+      stringWrite(fill.content, '</gradientFill></fill>');      
+    
+    else
+      error('Invalid fill type.');
+    end case;
   end;
 
   procedure setAlignmentContent (
@@ -592,11 +630,59 @@ create or replace package body ExcelTypes is
   is
     fill  CT_Fill;
   begin
+    fill.fillType := FT_PATTERN;
     fill.patternFill.patternType := nvl(p_patternType, 'none');
     fill.patternFill.fgColor := validateColor(p_fgColor);
     fill.patternFill.bgColor := validateColor(p_bgColor);
     setFillContent(fill);
     return fill;
+  end;
+
+  function makeGradientStop (
+    p_position  in number
+  , p_color     in varchar2
+  )
+  return CT_GradientStop
+  is
+    stop  CT_GradientStop;
+  begin
+    if p_position between 0 and 1 then
+      stop.position := p_position;
+    else
+      error('Gradient stop position must be a number between 0 and 1.');
+    end if;
+    stop.color := validateColor(p_color);
+    return stop;
+  end;
+  
+  function makeGradientFill (
+    p_degree  in number default null
+  , p_stops   in CT_GradientStopList default null
+  )
+  return CT_Fill
+  is
+    fill  CT_Fill;
+  begin
+    fill.fillType := FT_GRADIENT;
+    fill.gradientFill.degree := mod(nvl(p_degree, 0), 360);
+    fill.gradientFill.stops := nvl(p_stops, CT_GradientStopList());
+    setFillContent(fill);
+    return fill;
+  end;
+
+  procedure addGradientStop (
+    p_fill      in out nocopy CT_Fill
+  , p_position  in number
+  , p_color     in varchar2
+  )
+  is
+  begin
+    if p_fill.fillType != FT_GRADIENT then
+      error('Invalid fill type');
+    end if;
+    p_fill.gradientFill.stops.extend;
+    p_fill.gradientFill.stops(p_fill.gradientFill.stops.last) := makeGradientStop(p_position, p_color);
+    setFillContent(p_fill);
   end;
 
   function makeAlignment (
@@ -635,6 +721,33 @@ create or replace package body ExcelTypes is
     mergeBorderPr(mergedBorder.bottom, border.bottom);
     setBorderContent(mergedBorder);
     return mergedBorder;
+  end;
+  
+  function applyBorderSide (
+    border  in CT_Border
+  , top     in boolean
+  , right   in boolean
+  , bottom  in boolean
+  , left    in boolean  
+  )
+  return CT_Border
+  is
+    newBorder  CT_Border;
+  begin
+    if top then
+      newBorder.top := border.top;
+    end if;
+    if right then
+      newBorder.right := border.right;
+    end if;
+    if bottom then
+      newBorder.bottom := border.bottom;
+    end if;
+    if left then
+      newBorder.left := border.left;
+    end if;
+    setBorderContent(newBorder);
+    return newBorder;
   end;
 
   function mergeFonts (masterFont in CT_Font, font in CT_Font) return CT_Font is
@@ -805,6 +918,7 @@ create or replace package body ExcelTypes is
     begin
       tstream.currentToken := tstream.tokens(tstream.idx);
       tstream.idx := tstream.idx + 1;
+      debug(cssTokenLabels(tstream.currentToken.t)||'='||tstream.currentToken.v);
     end;
 
     function consumeNextToken return token_t is
@@ -1177,8 +1291,8 @@ create or replace package body ExcelTypes is
     -- 5.4.9. Consume a function
     procedure consumeFunction (funcToken in out nocopy token_t) is
       token  token_t;
+      args   tokenList_t := tokenList_t();
     begin
-      funcToken.args := serializedTokenList_t();
       -- skip leading whitespace: 
       -- there should be at most one whitespace at this point since they've been collapsed earlier in tokenize() procedure
       if nextToken().t = T_WHITESPACE then
@@ -1191,17 +1305,38 @@ create or replace package body ExcelTypes is
         if token.t = T_EOF then
           unexpectedToken(token);
         else
-          funcToken.args.extend;
-          funcToken.args(funcToken.args.last) := serializeToken(token);
+          --funcToken.args.extend;
+          --funcToken.args(funcToken.args.last) := serializeToken(token);
+          
+          if token.t = T_FUNCTION then
+            consumeFunction(token);
+          end if;
+          
+          args.extend;
+          args(args.last) := token;          
+          
         end if;
       end loop;
       -- trim whitespace
-      if funcToken.args.count > 0 and funcToken.args(funcToken.args.last)(1) = T_WHITESPACE then
-        funcToken.args.trim;
+      if args.count > 0 and args(args.last).t = T_WHITESPACE then
+        args.trim;
       end if;
       -- push back right parenthesis token
-      funcToken.args.extend;
-      funcToken.args(funcToken.args.last) := serializeToken(token);
+      args.extend;
+      args(args.last) := token;
+      
+      -- save arg list handle
+      funcToken.argListId := nvl(decl.argListMap.last, 0) + 1;
+      decl.argListMap(funcToken.argListId) := args;
+      
+      debug('======================================');
+      debug('function: '||funcToken.v);
+      debug('======================================');
+      for i in 1 .. args.count loop
+        debug(cssTokenLabels(args(i).t)||'='||args(i).v);
+      end loop;
+      debug('======================================');
+      
     end;
 
   begin
@@ -1227,6 +1362,8 @@ create or replace package body ExcelTypes is
       
         decl.name := currentToken.v;
         decl.v := componentList_t();
+        decl.argListMap.delete;
+        
         while nextToken().t = T_WHITESPACE loop
           consumeNextToken;
         end loop;
@@ -1309,34 +1446,6 @@ create or replace package body ExcelTypes is
       
     end loop;
     
-    /*
-    for i in 1 .. decls.count loop
-      dbms_output.put(decls(i).name || ':');
-      for j in 1 .. decls(i).v.count loop
-        if decls(i).v(j).isList then
-          dbms_output.put('[');
-          for k in 1 .. decls(i).v(j).tokenList.count loop
-            if k > 1 then
-              dbms_output.put(',');
-            end if;
-            dbms_output.put(decls(i).v(j).tokenList(k).v);
-          end loop;
-          dbms_output.put_line(']');
-        else
-          dbms_output.put(decls(i).v(j).token.v);
-          if decls(i).v(j).token.t = T_FUNCTION then
-            dbms_output.put('(');
-            for k in 1 .. decls(i).v(j).token.args.count loop
-              dbms_output.put(deserializeToken(decls(i).v(j).token.args(k)).v);
-            end loop;
-            dbms_output.put(')');
-          end if;
-          dbms_output.new_line;
-        end if;
-      end loop;
-    end loop;
-    */
-    
     return decls;
     
   end;
@@ -1359,7 +1468,7 @@ create or replace package body ExcelTypes is
                       ,'gray-125','gray-0625');
   end;
   
-  function "rgb" (args in serializedTokenList_t) return varchar2 is
+  function "rgb" (args in tokenList_t) return varchar2 is
     token      token_t;
     argType    pls_integer;
     sepType    pls_integer;
@@ -1372,7 +1481,7 @@ create or replace package body ExcelTypes is
         token.t := T_EOF;
       else
         idx := idx + 1;
-        token := deserializeToken(args(idx));
+        token := args(idx);
       end if;
     end;
     
@@ -1423,25 +1532,25 @@ create or replace package body ExcelTypes is
     end if;
     
     -- argument type detection
-    argType := args(1)(1);
+    argType := args(1).t;
     if argType not in (T_NUMBER, T_PERCENTAGE) then
-      unexpectedToken(deserializeToken(args(1)));
+      unexpectedToken(args(1));
     end if;
     
     -- separator type detection
     if args.count > 1 then   
-      if args(2)(1) = T_WHITESPACE then
-        if args(3)(1) = T_COMMA then
+      if args(2).t = T_WHITESPACE then
+        if args(3).t = T_COMMA then
           sepType := T_COMMA;
-        elsif args(3)(1) = argType then
+        elsif args(3).t = argType then
           sepType := T_WHITESPACE;
         else
-          unexpectedToken(deserializeToken(args(3)));
+          unexpectedToken(args(3));
         end if;
-      elsif args(2)(1) = T_COMMA then
+      elsif args(2).t = T_COMMA then
         sepType := T_COMMA;
       else
-        unexpectedToken(deserializeToken(args(2)));
+        unexpectedToken(args(2));
       end if;
     end if;
     
@@ -1510,7 +1619,229 @@ create or replace package body ExcelTypes is
     return makeRgbColor(color.r, color.g, color.b, color.a);
     
   end;
+  
+  function parseColor (token in token_t, validate in boolean default false) return varchar2 is
+    colorCode  varchar2(256);
+  begin
+
+    case token.t
+    when T_IDENT then
+            
+      if isValidColorName(token.v) then
+        colorCode := '#' || getColorCode(token.v);
+      elsif validate then
+        error(CSS_INVALID_VALUE, token.v);
+      end if;
+              
+    when T_HASH then
+          
+      if isValidColorCode(token.v) then
+        colorCode := '#' || token.v;
+      elsif validate then
+        error(CSS_BAD_RGB_COLOR, token.v);
+      end if;
     
+    when T_FUNCTION then
+      
+      if token.v in ('rgb','rgba') then
+        colorCode := '#' || "rgb"(functionArgListCache(token.argListId));
+      elsif validate then
+        error('Unsupported or invalid function: ''%s''', token.v);
+      end if;
+         
+    else
+      
+      if validate then
+        unexpectedToken(token);
+      end if;
+      
+    end case;
+    
+    return colorCode;
+    
+  end;
+
+  function "linear-gradient" (args in tokenList_t) return linearGradient_t is
+    token             token_t;
+    gradient          linearGradient_t;
+    idx               pls_integer := 0;
+    hasHorizontalDir  boolean := false;
+    hasVerticalDir    boolean := false;
+    horizontalDir     varchar2(256);
+    verticalDir       varchar2(256);
+    colorStop         colorStop_t;
+    
+    function assertPercentRange (v in number) return number is
+    begin
+      if v not between 0 and 100 then
+        error('Unsupported percentage value: %d', v);
+      end if;
+      return v;
+    end;
+    
+    procedure nextToken is
+    begin
+      if idx = args.count then
+        token.t := T_EOF;
+      else
+        idx := idx + 1;
+        token := args(idx);
+      end if;
+    end;
+    
+    procedure skipWhitespace is
+    begin
+      if token.t = T_WHITESPACE then
+        nextToken;
+      end if;      
+    end;
+
+    function match (t in pls_integer, v in varchar2 default null) return boolean is
+    begin
+      return ( token.t = t and (v is null or token.v = v) );      
+    end;
+
+    procedure expect (t in pls_integer, v in varchar2 default null) is
+    begin
+      if match(t,v) then
+        nextToken;
+      else
+        unexpectedToken(token);
+      end if;      
+    end;
+    
+    procedure readColorStop is
+    begin
+      colorStop.color := parseColor(token);
+      if colorStop.color is null then
+        unexpectedToken(token);
+      end if;
+      nextToken;
+      skipWhitespace;
+      if match(T_PERCENTAGE) then
+        colorStop.pct1 := assertPercentRange(token.nv);
+        nextToken;
+        skipWhitespace;
+        if match(T_PERCENTAGE) then
+          colorStop.pct2 := assertPercentRange(token.nv);
+          nextToken;
+          skipWhitespace;
+        end if;
+      end if;
+      gradient.colorStopList.extend;
+      gradient.colorStopList(gradient.colorStopList.last) := colorStop;
+    end;
+    
+  begin
+    
+    if args is empty then
+      error('No arguments found for linear-gradient() function');
+    end if;
+    
+    gradient.colorStopList := colorStopList_t();
+    
+    nextToken;
+    
+    if match(T_DIMENSION) then
+      case token.u
+      when 'deg' then
+        gradient.angle := token.nv;
+      when 'turn' then 
+        gradient.angle := 360 * token.nv;
+      else
+        unexpectedToken(token);
+      end case;
+      nextToken;
+      skipWhitespace;
+      expect(T_COMMA);
+      
+    elsif match(T_IDENT, 'to') then
+    
+      nextToken;
+      skipWhitespace;
+      if match(T_IDENT, 'left') or match(T_IDENT, 'right') then
+        horizontalDir := token.v;
+        hasHorizontalDir := true;
+      elsif match(T_IDENT, 'top') or match(T_IDENT, 'bottom') then
+        verticalDir := token.v;
+        hasVerticalDir := true;
+      else
+        unexpectedToken(token);
+      end if;
+      nextToken;
+      skipWhitespace;
+      -- try to match a 2nd gradient direction
+      if not hasHorizontalDir and ( match(T_IDENT, 'left') or match(T_IDENT, 'right') ) then
+        horizontalDir := token.v;
+        hasHorizontalDir := true;
+      elsif not hasVerticalDir and ( match(T_IDENT, 'top') or match(T_IDENT, 'bottom') ) then
+        verticalDir := token.v;
+        hasVerticalDir := true;
+      elsif match(T_COMMA) then
+        nextToken;
+      else
+        unexpectedToken(token);
+      end if;
+      
+      gradient.angle := case when horizontalDir = 'left' and verticalDir = 'top' then 315
+                             when horizontalDir = 'left' and verticalDir = 'bottom' then 225
+                             when horizontalDir = 'right' and verticalDir = 'bottom' then 135
+                             when horizontalDir = 'right' and verticalDir = 'top' then 45
+                             when horizontalDir = 'left' then 270
+                             when verticalDir = 'bottom' then 180
+                             when horizontalDir = 'right' then 90
+                             when verticalDir = 'top' then 0
+                        end;
+      
+      if hasHorizontalDir and hasVerticalDir then
+        nextToken;
+        skipWhitespace;
+        expect(T_COMMA);
+      end if;
+       
+    end if;
+    
+    skipWhitespace;
+    
+    --read first color-stop
+    colorStop := null;
+    readColorStop;
+    
+    loop
+      
+      expect(T_COMMA);
+      skipWhitespace;
+    
+      colorStop := null;  
+      --read color hint
+      if match(T_PERCENTAGE) then
+        colorStop.colorHint := assertPercentRange(token.nv);
+        nextToken;
+        skipWhitespace;
+        expect(T_COMMA);
+      end if;
+      --read next color-stop
+      skipWhitespace;
+      readColorStop;
+      exit when match(T_RIGHT);
+    end loop;
+    
+    for i in 1 .. gradient.colorStopList.count loop
+      debug(
+        utl_lms.format_message(
+          'hint=%s color=%s, pct1=%s, pct2=%s'
+        , to_char(gradient.colorStopList(i).colorHint)
+        , gradient.colorStopList(i).color
+        , to_char(gradient.colorStopList(i).pct1)
+        , to_char(gradient.colorStopList(i).pct2)
+        )
+      );
+    end loop;
+    
+    return gradient;
+    
+  end;
+  
   procedure parseCssBorderSide (decl in declaration_t, cssBorderSide in out nocopy cssBorderSide_t) 
   is
     token      token_t;
@@ -1526,53 +1857,34 @@ create or replace package body ExcelTypes is
       
       assertNotIsList(decl.v(i)); 
       token := decl.v(i).token;
-          
-      case token.t
-      when T_IDENT then
-            
+      
+      -- is it a valid color token?
+      colorCode := parseColor(token);
+      if colorCode is not null then
+        
+        if hasColor then
+          error('Duplicate color value');
+        end if;
+        cssBorderSide.color := colorCode;
+        hasColor := true;
+      
+      elsif token.t = T_IDENT then
+      
         if not hasStyle and isValidCssBorderStyle(token.v) then
           cssBorderSide.style := token.v;
           hasStyle := true;
         elsif not hasWidth and isValidCssBorderWidth(token.v) then
           cssBorderSide.width := token.v;
           hasWidth := true;
-        elsif not hasColor and isValidColorName(token.v) then
-          cssBorderSide.color := '#' || getColorCode(token.v);
-          hasColor := true;
         else
           error(CSS_INVALID_VALUE, token.v);
         end if;
-            
-      when T_HASH then
         
-        if isValidColorCode(token.v) then
-          if not hasColor then 
-            cssBorderSide.color := '#' || token.v;
-            hasColor := true;
-          else
-            error('Duplicate color value');
-          end if;
-        else
-          error(CSS_BAD_RGB_COLOR, token.v);
-        end if;
-        
-      when T_FUNCTION then
-        
-        if token.v in ('rgb','rgba') then
-          colorCode := '#' || "rgb"(token.args);
-          if not hasColor then
-            cssBorderSide.color := colorCode;
-            hasColor := true;
-          else
-            error('Duplicate color value');
-          end if;
-        else
-          error('Unsupported or invalid function: ''%s''', token.v);
-        end if;
-               
       else
+        
         unexpectedToken(token);
-      end case;
+      
+      end if;
         
     end loop;
     
@@ -1753,7 +2065,6 @@ create or replace package body ExcelTypes is
   ) 
   is
     maxValueCount  pls_integer := case when borderSideName is not null then 1 else 4 end;
-    token          token_t;
     colorCode      varchar2(256);
   begin
     
@@ -1762,49 +2073,19 @@ create or replace package body ExcelTypes is
     for i in 1 .. decl.v.count loop
             
       assertNotIsList(decl.v(i));
-          
-      token := decl.v(i).token;
-
-      case token.t
-      when T_IDENT then
-            
-        if not isValidColorName(token.v) then
-          error(CSS_INVALID_VALUE, token.v);
-        end if;
-        
-        colorCode := '#' || getColorCode(token.v);
-            
-      when T_HASH then
-            
-        if not isValidColorCode(token.v) then
-          error(CSS_BAD_RGB_COLOR, token.v);
-        end if;
-        
-        colorCode := '#' || token.v;
-        
-      when T_FUNCTION then
-        
-        if token.v in ('rgb','rgba') then
-          colorCode := '#' || "rgb"(token.args);
-        else
-          error('Unsupported or invalid function: ''%s''', token.v);
-        end if;
-          
-      else
-        unexpectedToken(token);
-      end case;
-          
+      colorCode := parseColor(decl.v(i).token, true);
+                
       case decl.v.count
       when 1 then
         case borderSideName
         when 'top' then
-          cssBorder.top.color := token.v;
+          cssBorder.top.color := colorCode;
         when 'right' then
-          cssBorder.right.color := token.v;
+          cssBorder.right.color := colorCode;
         when 'bottom' then
-          cssBorder.bottom.color := token.v;
+          cssBorder.bottom.color := colorCode;
         when 'left' then
-          cssBorder.left.color := token.v;
+          cssBorder.left.color := colorCode;
         else
           -- set all four sides at once
           cssBorder.top.color := colorCode;
@@ -2158,43 +2439,10 @@ create or replace package body ExcelTypes is
   , colorCode  in out nocopy varchar2
   )
   is
-    token  token_t;
   begin
-    
     assertValueCount(decl.name, decl.v.count, 1);
     assertNotIsList(decl.v(1));
-    
-    token := decl.v(1).token;
-    
-    case token.t
-    when T_IDENT then
-            
-      if isValidColorName(token.v) then
-        colorCode := '#' || getColorCode(token.v);
-      else
-        error(CSS_INVALID_VALUE, token.v);
-      end if;
-              
-    when T_HASH then
-          
-      if isValidColorCode(token.v) then
-        colorCode := '#' || token.v;
-      else
-        error(CSS_BAD_RGB_COLOR, token.v);
-      end if;
-    
-    when T_FUNCTION then
-      
-      if token.v in ('rgb','rgba') then
-        colorCode := '#' || "rgb"(token.args);
-      else
-        error('Unsupported or invalid function: ''%s''', token.v);
-      end if;
-         
-    else
-      unexpectedToken(token);
-    end case;
-    
+    colorCode := parseColor(decl.v(1).token, true);
   end;
 
   procedure parseCssMsoPattern (
@@ -2214,50 +2462,31 @@ create or replace package body ExcelTypes is
       
       assertNotIsList(decl.v(i));     
       token := decl.v(i).token;
-          
-      case token.t
-      when T_IDENT then
+      
+      -- is it a valid color token?
+      colorCode := parseColor(token);
+      if colorCode is not null then
+        
+        if hasColor then
+          error('Duplicate color value');
+        end if;
+        msoPattern.color := colorCode;
+        hasColor := true;
+      
+      elsif token.t = T_IDENT then
             
         if not hasPatternType and isValidMsoPatternType(token.v) then
           msoPattern.patternType := token.v;
           hasPatternType := true;
-        elsif not hasColor and isValidColorName(token.v) then
-          msoPattern.color := '#' || getColorCode(token.v);
-          hasColor := true;
         else
           error(CSS_INVALID_VALUE, token.v);
         end if;
-            
-      when T_HASH then
-        
-        if isValidColorCode(token.v) then
-          if not hasColor then 
-            msoPattern.color := '#' || token.v;
-            hasColor := true;
-          else
-            error('Duplicate color value');
-          end if;
-        else
-          error(CSS_BAD_RGB_COLOR, token.v);
-        end if;
-
-      when T_FUNCTION then
-        
-        if token.v in ('rgb','rgba') then
-          colorCode := '#' || "rgb"(token.args);
-          if not hasColor then
-            msoPattern.color := colorCode;
-            hasColor := true;
-          else
-            error('Duplicate color value');
-          end if;
-        else
-          error('Unsupported or invalid function: ''%s''', token.v);
-        end if;
           
       else
+        
         unexpectedToken(token);
-      end case;
+        
+      end if;
         
     end loop;
     
@@ -2287,6 +2516,31 @@ create or replace package body ExcelTypes is
     end if;
     
   end;
+
+  procedure parseCssGradient (
+    decl      in declaration_t
+  , gradient  in out nocopy linearGradient_t
+  )
+  is
+    token  token_t;
+  begin
+    assertValueCount(decl.name, decl.v.count, 1);
+    assertNotIsList(decl.v(1));
+    token := decl.v(1).token;
+    
+    if token.t = T_FUNCTION then
+      
+      if token.v = 'linear-gradient' then
+        gradient := "linear-gradient"(functionArgListCache(decl.v(1).token.argListId));
+      else
+        error('Unsupported or invalid function: ''%s''', token.v);
+      end if;
+      
+    else
+      unexpectedToken(token);
+    end if;
+    
+  end;
   
   function parseCss (
     decls in declarationList_t
@@ -2301,6 +2555,7 @@ create or replace package body ExcelTypes is
     for i in 1 .. decls.count loop
     
       decl := decls(i);
+      functionArgListCache := decl.argListMap;
     
       case decl.name
       when 'border' then
@@ -2437,11 +2692,20 @@ create or replace package body ExcelTypes is
         
       when 'background' then
         
-        parseCssColor(decl, css.backgroundColor);
+        begin
+          parseCssColor(decl, css.backgroundColor);
+        exception
+          when others then
+            parseCssGradient(decl, css.backgroundImage);
+        end;
 
       when 'background-color' then
         
         parseCssColor(decl, css.backgroundColor);
+        
+      when 'background-image' then
+        
+        parseCssGradient(decl, css.backgroundImage);
         
       when 'mso-number-format' then
         
@@ -2578,71 +2842,242 @@ create or replace package body ExcelTypes is
   
   end;
 
+  function convertCssGradient (gradient in linearGradient_t) return CT_GradientFill is
+    gradientFill  CT_GradientFill;
+    tmp           CT_GradientStopList := CT_GradientStopList();
+    stops         colorStopList_t := gradient.colorStopList;
+    sofar         number;
+    idx           pls_integer;
+    n             pls_integer;
+    len           number;
+    procedure putStop (pos in number, color in varchar2) is
+    begin
+      tmp.extend;
+      tmp(tmp.last) := makeGradientStop(pos/100, color);
+    end;
+  begin
+    -- default orientation in CSS linear-gradient is top-bottom, which corresponds to 180deg in CSS convention
+    -- Excel's default is left-right, which corresponds to 0deg in Excel convention
+    -- so Excel degree = CSS angle - 90
+    gradientFill.degree := mod(nvl(gradient.angle,180) - 90, 360);
+    gradientFill.stops := CT_GradientStopList();
+    
+    -- https://drafts.csswg.org/css-images-4/#gradient-colors
+    -- 3.5.3. Color Stop "Fixup"
+    -- TODO: move to "linear-gradient()"?
+    
+    /* 1a. If the first color stop does not have a position, set its position to 0%. */
+    if stops(1).pct1 is null then
+      stops(1).pct1 := 0;
+    end if;
+    /* 1b. If the last color stop does not have a position, set its position to 100%. */
+    if stops(stops.last).pct1 is null then
+      stops(stops.last).pct1 := 100;
+    end if;
+    
+    /* 2. If a color stop or transition hint has a position that is less than the specified position 
+          of any color stop or transition hint before it in the list, set its position to be equal to 
+          the largest specified position of any color stop or transition hint before it. */
+    sofar := 0;
+    for i in 2 .. stops.count loop
+      
+      if stops(i).colorHint is not null then
+        if stops(i).colorHint < sofar then
+          stops(i).colorHint := sofar;
+        else
+          sofar := stops(i).colorHint;
+        end if; 
+      end if;
+      
+      if stops(i).pct1 is not null then
+        if stops(i).pct1 < sofar then
+          stops(i).pct1 := sofar;
+        else
+          sofar := stops(i).pct1;
+        end if; 
+      end if;
+
+      if stops(i).pct2 is not null then
+        if stops(i).pct2 < sofar then
+          stops(i).pct2 := sofar;
+        else
+          sofar := stops(i).pct2;
+        end if; 
+      end if;      
+    
+    end loop;
+    
+    /* 3. If any color stop still does not have a position, then, for each run of adjacent color stops 
+          without positions, set their positions so that they are evenly spaced between the preceding 
+          and following color stops with positions. */
+              
+    for i in 1 .. stops.count - 1 loop
+      
+      if stops(i).pct1 is null then
+        
+        -- get next stop with position
+        idx := i + 1;
+        while stops(idx).pct1 is null loop
+          idx := idx + 1;
+        end loop;
+        
+        -- set empty positions
+        n := idx - i + 1;
+        len := (stops(idx).pct1 - sofar)/n;
+        for j in 0 .. n-2 loop
+          stops(i+j).pct1 := sofar + len * (j+1);
+        end loop;
+        
+      else
+        
+        sofar := stops(i).pct1;
+        if stops(i).pct2 is not null then
+          sofar := stops(i).pct2;
+        end if;
+      
+      end if;
+    
+    end loop;
+    
+    -- first stop
+    putStop(0, stops(1).color);
+    if stops(1).pct2 > stops(1).pct1 then
+      putStop(stops(1).pct2, stops(1).color);
+    elsif stops(1).pct1 > 0 then
+      putStop(stops(1).pct1, stops(1).color);
+    end if;
+    
+    for i in 2 .. stops.count - 1 loop
+      
+      -- transition hint
+      if stops(i).colorHint is not null then
+        putStop(stops(i).colorHint, mixRgbColor(stops(i-1).color, stops(i).color));
+      end if;
+      
+      putStop(stops(i).pct1, stops(i).color);
+      if stops(i).pct2 != stops(i).pct1 then
+        putStop(stops(i).pct2, stops(i).color);
+      end if;
+    
+    end loop;
+
+    -- last transition hint
+    if stops(stops.last).colorHint is not null then
+      putStop(stops(stops.last).colorHint, '#'||mixRgbColor(substr(stops(stops.last-1).color,2), substr(stops(stops.last).color,2)));
+    end if;
+    
+    -- last stop
+    if stops(stops.last).pct1 < 100 then
+      putStop(stops(stops.last).pct1, stops(stops.last).color);
+    end if;    
+    putStop(100, stops(stops.last).color);
+    
+    -- cleanup
+    -- discard stops before the last leading 0 and after the first 1 positions
+    idx := 1;
+    while tmp(idx).position = 0 loop
+      idx := idx + 1;
+    end loop;
+    
+    for i in idx-1 .. tmp.last loop
+      gradientFill.stops.extend;
+      gradientFill.stops(gradientFill.stops.last) := tmp(i);
+      exit when tmp(i).position = 1;
+    end loop;
+    
+    -- Excel doesn't handle identical stop positions the same way as CSS
+    -- so adding epsilon increments to distinguish them internally, yet keeping them visually at the same position
+    sofar := 0;
+    n := 0;
+    for i in 2 .. gradientFill.stops.count - 1 loop
+      if gradientFill.stops(i).position = sofar then
+        n := n + 1;
+        gradientFill.stops(i).position := sofar + n * 1e-15;
+      else
+        n := 0;
+        sofar := gradientFill.stops(i).position;
+      end if;
+    end loop;
+  
+    return gradientFill;
+  end;
+
   function convertCssBackground (css in cssStyle_t) return CT_Fill is
     fill  CT_Fill;
   begin
     
-    if css.msoPattern.patternType = 'none' then
+    if css.backgroundImage.colorStopList is null then
     
-      --fill.patternFill.patternType := 'solid';
-      fill.patternFill.fgColor := validateColor(css.backgroundColor);
-      fill.patternFill.bgColor := validateColor(css.msoPattern.color);
+      if css.msoPattern.patternType = 'none' then
       
-      if fill.patternFill.fgColor is not null or fill.patternFill.bgColor is not null then
-        fill.patternFill.patternType := 'solid';
+        --fill.patternFill.patternType := 'solid';
+        fill.patternFill.fgColor := validateColor(css.backgroundColor);
+        fill.patternFill.bgColor := validateColor(css.msoPattern.color);
+        
+        if fill.patternFill.fgColor is not null or fill.patternFill.bgColor is not null then
+          fill.patternFill.patternType := 'solid';
+        else
+          fill.patternFill.patternType := 'none';
+        end if;
+        
+      elsif css.msoPattern.patternType is not null then
+      
+        fill.patternFill.fgColor := validateColor(css.msoPattern.color);
+        fill.patternFill.bgColor := validateColor(css.backgroundColor);
+      
+        case css.msoPattern.patternType
+        when 'gray-50' then
+          fill.patternFill.patternType := 'mediumGray';
+        when 'gray-75' then
+          fill.patternFill.patternType := 'darkGray';
+        when 'gray-25' then
+          fill.patternFill.patternType := 'lightGray';
+        when 'horz-stripe' then
+          fill.patternFill.patternType := 'darkHorizontal';
+        when 'vert-stripe' then
+          fill.patternFill.patternType := 'darkVertical';
+        when 'reverse-dark-down' then
+          fill.patternFill.patternType := 'darkDown';
+        when 'diag-stripe' then
+          fill.patternFill.patternType := 'darkUp';
+        when 'diag-cross' then
+          fill.patternFill.patternType := 'darkGrid';
+        when 'thick-diag-cross' then
+          fill.patternFill.patternType := 'darkTrellis';
+        when 'thin-horz-stripe' then
+          fill.patternFill.patternType := 'lightHorizontal';
+        when 'thin-vert-stripe' then
+          fill.patternFill.patternType := 'lightVertical';
+        when 'thin-reverse-diag-stripe' then
+          fill.patternFill.patternType := 'lightDown';
+        when 'thin-diag-stripe' then
+          fill.patternFill.patternType := 'lightUp';
+        when 'thin-horz-cross' then
+          fill.patternFill.patternType := 'lightGrid';
+        when 'thin-diag-cross' then
+          fill.patternFill.patternType := 'lightTrellis';
+        when 'gray-125' then
+          fill.patternFill.patternType := 'gray125';
+        when 'gray-0625' then
+          fill.patternFill.patternType := 'gray0625';
+        end case;
+    
       else
         fill.patternFill.patternType := 'none';
+        fill.patternFill.fgColor := validateColor(css.msoPattern.color);
+        fill.patternFill.bgColor := validateColor(css.backgroundColor);
       end if;
       
-    elsif css.msoPattern.patternType is not null then
+      fill.fillType := FT_PATTERN;
+      setFillContent(fill);
     
-      fill.patternFill.fgColor := validateColor(css.msoPattern.color);
-      fill.patternFill.bgColor := validateColor(css.backgroundColor);
-    
-      case css.msoPattern.patternType
-      when 'gray-50' then
-        fill.patternFill.patternType := 'mediumGray';
-      when 'gray-75' then
-        fill.patternFill.patternType := 'darkGray';
-      when 'gray-25' then
-        fill.patternFill.patternType := 'lightGray';
-      when 'horz-stripe' then
-        fill.patternFill.patternType := 'darkHorizontal';
-      when 'vert-stripe' then
-        fill.patternFill.patternType := 'darkVertical';
-      when 'reverse-dark-down' then
-        fill.patternFill.patternType := 'darkDown';
-      when 'diag-stripe' then
-        fill.patternFill.patternType := 'darkUp';
-      when 'diag-cross' then
-        fill.patternFill.patternType := 'darkGrid';
-      when 'thick-diag-cross' then
-        fill.patternFill.patternType := 'darkTrellis';
-      when 'thin-horz-stripe' then
-        fill.patternFill.patternType := 'lightHorizontal';
-      when 'thin-vert-stripe' then
-        fill.patternFill.patternType := 'lightVertical';
-      when 'thin-reverse-diag-stripe' then
-        fill.patternFill.patternType := 'lightDown';
-      when 'thin-diag-stripe' then
-        fill.patternFill.patternType := 'lightUp';
-      when 'thin-horz-cross' then
-        fill.patternFill.patternType := 'lightGrid';
-      when 'thin-diag-cross' then
-        fill.patternFill.patternType := 'lightTrellis';
-      when 'gray-125' then
-        fill.patternFill.patternType := 'gray125';
-      when 'gray-0625' then
-        fill.patternFill.patternType := 'gray0625';
-      end case;
-  
     else
-      fill.patternFill.patternType := 'none';
-      fill.patternFill.fgColor := validateColor(css.msoPattern.color);
-      fill.patternFill.bgColor := validateColor(css.backgroundColor);
-    end if;
+      
+      fill.gradientFill := convertCssGradient(css.backgroundImage);
+      fill.fillType := FT_GRADIENT;
+      setFillContent(fill);
     
-    setFillContent(fill);
+    end if;
   
     return fill;
     
