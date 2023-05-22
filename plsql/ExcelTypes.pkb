@@ -19,8 +19,6 @@ create or replace package body ExcelTypes is
   'skyblue:87CEEB;slateblue:6A5ACD;slategray:708090;slategrey:708090;snow:FFFAFA;springgreen:00FF7F;tan:D2B48C;teal:008080;thistle:D8BFD8;tomato:FF6347;' ||
   'turquoise:40E0D0;violet:EE82EE;wheat:F5DEB3;white:FFFFFF;steelblue:4682B4;whitesmoke:F5F5F5;yellow:FFFF00;yellowgreen:9ACD32';
   
-  --DEFAULT_FONT_SIZE_PT  constant varchar2(256) := to_char(DEFAULT_FONT_SIZE, 'TM9', 'nls_numeric_characters=''. ''')||'pt';
-
   type simpleTypeMap_t is table of pls_integer index by varchar2(16);
 
   -- BEGIN CSS parser constants & structures
@@ -69,7 +67,6 @@ create or replace package body ExcelTypes is
   , v     varchar2(256)
   , nv    number
   , u     varchar2(256)
-  --, args  serializedTokenList_t
   , argListId  pls_integer
   , pos   pos_t
   );
@@ -84,8 +81,8 @@ create or replace package body ExcelTypes is
   type rgbColor_t is record (r pls_integer, g pls_integer, b pls_integer, a number);
   type cssBorderSide_t is record (style varchar2(256) := 'none', width varchar2(256) := 'medium', color varchar2(256));
   type cssBorder_t is record (top cssBorderSide_t, right cssBorderSide_t, bottom cssBorderSide_t, left cssBorderSide_t);
-  type cssFont_t is record (family varchar2(256)/* := DEFAULT_FONT_FAMILY*/, sz varchar2(256)/* := DEFAULT_FONT_SIZE_PT*/, style varchar2(256) := 'normal', weight varchar2(256) := 'normal');
-  type cssTextDecoration_t is record (line varchar2(256) := 'none', style varchar2(256) := 'solid');
+  type cssFont_t is record (family varchar2(256), sz varchar2(256), style varchar2(256) := '', weight varchar2(256) := '');
+  type cssTextDecoration_t is record (line varchar2(256) := '', style varchar2(256) := 'solid');
   type cssMsoPattern_t is record (patternType varchar2(256) := 'none', color varchar2(256));
   
   type colorStop_t is record (colorHint number, color varchar2(256), pct1 number, pct2 number);
@@ -116,6 +113,9 @@ create or replace package body ExcelTypes is
   borderStyleMap     simpleTypeMap_t;
   hAlignmentMap      simpleTypeMap_t;
   vAlignmentMap      simpleTypeMap_t;
+  fontVertAlignMap   simpleTypeMap_t;
+  
+  builtInDateFmtMap  CT_NumFmtMap;
   
   debug_enabled  boolean := false;
   
@@ -244,6 +244,25 @@ create or replace package body ExcelTypes is
     vAlignmentMap('justify') := 3;
     vAlignmentMap('distributed') := 4;
     
+    -- font vertical alignment
+    fontVertAlignMap('baseline') := 0;
+    fontVertAlignMap('superscript') := 1;
+    fontVertAlignMap('subscript') := 2;
+    
+    -- built-in date formats
+    builtInDateFmtMap(14) := makeNumFmt(14, 'mm-dd-yy');
+    builtInDateFmtMap(15) := makeNumFmt(15, 'd-mmm-yy');
+    builtInDateFmtMap(16) := makeNumFmt(16, 'd-mmm');
+    builtInDateFmtMap(17) := makeNumFmt(17, 'mmm-yy');
+    builtInDateFmtMap(18) := makeNumFmt(18, 'h:mm AM/PM');
+    builtInDateFmtMap(19) := makeNumFmt(19, 'h:mm:ss AM/PM');
+    builtInDateFmtMap(20) := makeNumFmt(20, 'h:mm');
+    builtInDateFmtMap(21) := makeNumFmt(21, 'h:mm:ss');
+    builtInDateFmtMap(22) := makeNumFmt(22, 'm/d/yy h:mm');
+    builtInDateFmtMap(45) := makeNumFmt(45, 'mm:ss');
+    builtInDateFmtMap(46) := makeNumFmt(46, '[h]:mm:ss');
+    builtInDateFmtMap(47) := makeNumFmt(47, 'mmss.0');
+    
   end;
 
   procedure error (
@@ -290,6 +309,11 @@ create or replace package body ExcelTypes is
   function isValidVerticalAlignment (p_vAlignment in varchar2) return boolean is
   begin
     return vAlignmentMap.exists(p_vAlignment);
+  end;
+
+  function isValidFontVerticalAlignment (p_fontVertAlign in varchar2) return boolean is
+  begin
+    return fontVertAlignMap.exists(p_fontVertAlign);
   end;
 
   function getColorMap return colorMap_t is
@@ -402,6 +426,11 @@ create or replace package body ExcelTypes is
   begin
     return vAlignmentMap(p_vAlignment);
   end;
+
+  function getFontVerticalAlignmentId (p_fontVertAlign in varchar2) return pls_integer is
+  begin
+    return fontVertAlignMap(p_fontVertAlign);
+  end;
   
   procedure unexpectedToken (token in token_t) is
   begin
@@ -488,6 +517,9 @@ create or replace package body ExcelTypes is
       end if;
     end if;
     stringWrite(font.content, '<u val="'||nvl(font.u, 'none')||'"/>');
+    if font.vertAlign is not null then
+      stringWrite(font.content, '<vertAlign val="'||font.vertAlign||'"/>');
+    end if;
     stringWrite(font.content, '</font>');    
   end;
 
@@ -545,6 +577,21 @@ create or replace package body ExcelTypes is
     end if;    
   end;
 
+  function makeNumFmt (
+    numFmtId in pls_integer
+  , formatCode in varchar2
+  ) 
+  return CT_NumFmt
+  is
+    fmt  CT_NumFmt;
+  begin
+    fmt.numFmtId := numFmtId;
+    fmt.formatCode := formatCode;
+    fmt.isDate := regexp_like(formatCode, '[ymdhs]');
+    fmt.isTimestamp := regexp_like(formatCode, 's?s.0{1,3}');
+    return fmt;
+  end;
+
   function makeBorderPr (
     p_style  in varchar2 default null
   , p_color  in varchar2 default null
@@ -588,12 +635,13 @@ create or replace package body ExcelTypes is
   end;
 
   function makeFont (
-    p_name   in varchar2 default null
-  , p_sz     in pls_integer default null
-  , p_b      in boolean default false
-  , p_i      in boolean default false
-  , p_color  in varchar2 default null
-  , p_u      in varchar2 default null
+    p_name       in varchar2 default null
+  , p_sz         in pls_integer default null
+  , p_b          in boolean default false
+  , p_i          in boolean default false
+  , p_color      in varchar2 default null
+  , p_u          in varchar2 default null
+  , p_vertAlign  in varchar2 default null
   )
   return CT_Font
   is
@@ -616,9 +664,50 @@ create or replace package body ExcelTypes is
       end if;
     end if;
     
+    if p_vertAlign is not null then
+      if isValidFontVerticalAlignment(p_vertAlign) then
+        font.vertAlign := p_vertAlign;
+      else
+        error('Invalid font vertical alignment: %s', p_vertAlign);
+      end if;
+    end if;
+    
     font.color := validateColor(p_color);
     setFontContent(font);
     return font;
+  end;
+
+  function makeFontRPr (
+    font  in CT_Font
+  )
+  return varchar2
+  is
+    rPr  varchar2(32767);
+  begin
+    stringWrite(rPr, '<rPr>');
+    if font.b then
+      stringWrite(rPr, '<b/>');
+    end if;
+    if font.i then
+      stringWrite(rPr, '<i/>');
+    end if;
+    if font.u is not null and font.u != 'none' then
+      if font.u = 'single' then
+        stringWrite(rPr, '<u/>');
+      else
+        stringWrite(rPr, '<u val="'||font.u||'"/>');
+      end if;
+    end if;
+    if font.vertAlign is not null then
+      stringWrite(rPr, '<vertAlign val="'||font.vertAlign||'"/>');
+    end if;
+    if font.color is not null then
+      stringWrite(rPr, '<color rgb="'||font.color||'"/>');
+    end if;    
+    stringWrite(rPr, '<sz val="'||to_char(nvl(font.sz, DEFAULT_FONT_SIZE))||'"/>');
+    stringWrite(rPr, '<rFont val="'||nvl(font.name, DEFAULT_FONT_FAMILY)||'"/>');
+    stringWrite(rPr, '</rPr>');
+    return rPr;
   end;
 
   function makePatternFill (
@@ -750,19 +839,19 @@ create or replace package body ExcelTypes is
     return newBorder;
   end;
 
-  function mergeFonts (masterFont in CT_Font, font in CT_Font) return CT_Font is
+  function mergeFonts (masterFont in CT_Font, font in CT_Font, force in boolean default false) return CT_Font is
     mergedFont  CT_Font := masterFont;
   begin  
     if font.name is not null then
       mergedFont.name := font.name;
     end if;
-    if font.b then
+    if font.b is not null and ( font.b or force ) then
       mergedFont.b := font.b;
     end if;
-    if font.i then
+    if font.i is not null and ( font.i or force ) then
       mergedFont.i := font.i;
     end if;
-    if font.u != 'none' then
+    if font.u is not null and ( font.u != 'none' or force ) then
       mergedFont.u := font.u;
     end if;
     if font.color is not null then
@@ -770,6 +859,9 @@ create or replace package body ExcelTypes is
     end if;
     if font.sz is not null then
       mergedFont.sz := font.sz;
+    end if;
+    if font.vertAlign is not null or force then
+      mergedFont.vertAlign := font.vertAlign;
     end if;
     setFontContent(mergedFont);
     return mergedFont;
@@ -824,6 +916,157 @@ create or replace package body ExcelTypes is
     
     setAlignmentContent(mergedAlignment);
     return mergedAlignment;
+  end;
+
+  function makeRichText (
+    p_content   in xmltype
+  , p_rootFont  in CT_Font
+  )
+  return CT_RichText
+  is
+    
+    type fontStack_t is table of CT_Font;
+    
+    doc          dbms_xmldom.DOMDocument;
+    docNode      dbms_xmldom.DOMNode;
+    run          CT_TextRun;
+    tmp          CT_TextRunList := CT_TextRunList();
+    richText     CT_RichText;
+    previousRPr  varchar2(32767);
+    currentRPr   varchar2(32767);
+    runIdx       pls_integer;
+    fonts        fontStack_t := fontStack_t();
+    
+    function isXmlWhitespace (c in varchar2) return boolean is
+    begin
+      return ( c in (chr(9), chr(10), chr(13), chr(32)) );
+    end;
+    
+    procedure addRun (text in varchar2, font in CT_Font) is
+      textRun  CT_TextRun;
+    begin
+      textRun.text := text;
+      textRun.font := font;
+      tmp.extend;
+      tmp(tmp.last) := textRun;
+    end;
+    
+    function peekFont return CT_Font is
+    begin
+      if fonts is not empty then
+        return fonts(fonts.last);
+      else
+        return p_rootFont;
+      end if;
+    end;
+    
+    procedure processNodeList (nlist in dbms_xmldom.DOMNodeList) is
+      nlist2     dbms_xmldom.DOMNodeList;
+      node       dbms_xmldom.DOMNode;
+      nodeName   varchar2(4000);
+      styleAttr  varchar2(4000);
+      style      CT_Style;
+      font       CT_Font := peekFont();
+      text       varchar2(4000);
+    begin
+
+      for i in 0 .. dbms_xmldom.getLength(nlist) - 1 loop
+        node := dbms_xmldom.item(nlist, i);
+        
+        case dbms_xmldom.getNodeType(node)
+        when dbms_xmldom.ELEMENT_NODE then
+          nodeName := dbms_xmldom.getNodeName(node);
+          
+          case nodeName
+          when 'b' then
+            font.b := true;
+          when 'i' then
+            font.i := true;
+          when 'u' then
+            font.u := 'single';
+          when 'span' then
+            styleAttr := dbms_xmldom.getAttribute(dbms_xmldom.makeElement(node), 'style');        
+            style := getStyleFromCss(styleAttr);
+            font := mergeFonts(font, style.font, force => true);
+          when 'sub' then
+            font.vertAlign := 'subscript';
+          when 'sup' then
+            font.vertAlign := 'superscript';
+          when 'br' then
+            addRun(chr(13)||chr(10), peekFont());
+          else
+            error('Unsupported tag: %s', nodeName);
+          end case;
+                    
+          nlist2 := dbms_xmldom.getChildNodes(node);
+          
+          if not dbms_xmldom.isNull(nlist2) then
+            setFontContent(font);
+            fonts.extend;
+            fonts(fonts.last) := font; -- push
+            processNodeList(nlist2);
+            fonts.trim; -- pop
+            font := peekFont();
+          end if;
+          
+        when dbms_xmldom.TEXT_NODE then
+          
+          text := dbms_xmldom.getNodeValue(node);
+          font := peekFont();
+          addRun(text, font);
+          
+        else
+          error('Unsupported node type');
+        end case;      
+        
+      end loop;
+
+      dbms_xmldom.freeNodeList(nlist);
+
+    end;
+    
+  begin
+    
+    doc := dbms_xmldom.newDOMDocument(p_content);
+    docNode := dbms_xmldom.makeNode(doc);
+    processNodeList(dbms_xslprocessor.selectNodes(docNode, '/root/node()'));   
+    dbms_xmldom.freeDocument(doc);
+    
+    -- collapse identical rPr's
+    runIdx := 0;
+    richText.runs := CT_TextRunList();
+    for i in 1 .. tmp.count loop
+      currentRPr := makeFontRPr(tmp(i).font);
+      debug(utl_lms.format_message('"%s":%s', tmp(i).text, currentRPr));
+      if currentRPr = previousRPr then
+        richText.runs(runIdx).text := richText.runs(runIdx).text || tmp(i).text;
+      else
+        runIdx := runIdx + 1;
+        richText.runs.extend;
+        richText.runs(runIdx) := tmp(i);
+        previousRPr := currentRPr;
+      end if;
+    end loop;
+    
+    for i in 1 .. richText.runs.count loop
+      run := richText.runs(i);
+      stringWrite(richText.content, '<r>');
+      stringWrite(richText.content, makeFontRPr(run.font));
+      -- if the text contains leading or trailing whitespaces, preserve it
+      if isXmlWhitespace(substr(run.text,1,1)) or isXmlWhitespace(substr(run.text,-1)) then
+        stringWrite(richText.content, '<t xml:space="preserve">');
+      else
+        stringWrite(richText.content, '<t>');
+      end if;
+      stringWrite(richText.content, dbms_xmlgen.convert(richText.runs(i).text));
+      stringWrite(richText.content, '</t>');
+      stringWrite(richText.content, '</r>');      
+    end loop;
+    
+    debug(richText.content);
+    
+    return richText;
+    
   end;
   
   function parseRawCss (css in varchar2)
@@ -2362,7 +2605,7 @@ create or replace package body ExcelTypes is
     
     if token.t = T_IDENT then
       
-      if token.v in ('top','middle','bottom','justify','distributed') then
+      if token.v in ('top','middle','bottom','justify','distributed', 'sub', 'super', 'baseline') then
         verticalAlign := token.v;
       else
         error(CSS_INVALID_VALUE, token.v);
@@ -2793,15 +3036,27 @@ create or replace package body ExcelTypes is
     font.i := ( css.font.style = 'italic' );
     font.b := ( css.font.weight = 'bold' );
     
-    if css.textDecoration.line = 'underline' then
+    case css.textDecoration.line
+    when 'underline' then
       font.u := case css.textDecoration.style
                 when 'solid' then 'single'
                 when 'double' then 'double'
                 when 'single-accounting' then 'singleAccounting'
                 when 'double-accounting' then 'doubleAccounting'
                 end;
-    else
+    
+    when 'none' then
       font.u := 'none';
+    else
+      null;
+    end case;
+    
+    if css.verticalAlign = 'sub' then
+      font.vertAlign := 'subscript';
+    elsif css.verticalAlign = 'super' then
+      font.vertAlign := 'superscript';
+    elsif css.verticalAlign = 'baseline' then
+      font.vertAlign := null;
     end if;
     
     font.color := validateColor(css.color);
@@ -3107,6 +3362,35 @@ create or replace package body ExcelTypes is
     dbms_output.put_line(style.fill.content);
     dbms_output.put_line(style.border.content);
     dbms_output.put_line(style.alignment.content);
+  end;
+
+  function timestampRound (
+    ts     in timestamp_unconstrained
+  , scale  in pls_integer default 0
+  )
+  return timestamp_unconstrained
+  deterministic
+  is
+    seconds  number := extract(second from ts);
+  begin
+    return ts + numtodsinterval(round(seconds,scale) - seconds, 'second');
+  end;
+
+  function fromOADate (
+    p_value  in number
+  , p_scale  in pls_integer default 0
+  )
+  return timestamp_unconstrained
+  is
+    -- Excel bug workaround : date 1900-02-29 doesn't exist yet Excel stores it at serial #60
+    n  number := case when p_value < 60 then p_value + 1 else p_value end;
+  begin
+    return timestampRound(timestamp '1899-12-30 00:00:00' + numtodsinterval(n, 'DAY'), p_scale);
+  end;
+  
+  function getBuiltInDateFmts return CT_NumFmtMap is
+  begin
+    return builtInDateFmtMap;
   end;
 
 begin

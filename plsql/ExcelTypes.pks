@@ -3,7 +3,7 @@ create or replace package ExcelTypes is
 
   MIT License
 
-  Copyright (c) 2021-2022 Marc Bleron
+  Copyright (c) 2021-2023 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +29,8 @@ create or replace package ExcelTypes is
     Marc Bleron       2021-09-04     Added wrapText attribute, and font underline
     Marc Bleron       2022-09-03     Added CSS features
     Marc Bleron       2022-11-04     Added gradientFill
+    Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
+                                     and rich text support
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -52,13 +54,14 @@ create or replace package ExcelTypes is
   );
   
   type CT_Font is record (
-    name     varchar2(64)/* := DEFAULT_FONT_FAMILY*/
-  , b        boolean := false
-  , i        boolean := false
-  , u        varchar2(16)
-  , color    varchar2(8)
-  , sz       pls_integer/* := DEFAULT_FONT_SIZE*/
-  , content  varchar2(32767)
+    name       varchar2(64)
+  , b          boolean := false
+  , i          boolean := false
+  , u          varchar2(16)
+  , color      varchar2(8)
+  , sz         pls_integer
+  , vertAlign  varchar2(16)
+  , content    varchar2(32767)
   );
 
   type CT_PatternFill is record (
@@ -78,6 +81,15 @@ create or replace package ExcelTypes is
     degree  number
   , stops   CT_GradientStopList
   );
+  
+  type CT_NumFmt is record (
+    numFmtId     pls_integer
+  , formatCode   varchar2(256)
+  , isDate       boolean := false
+  , isTimestamp  boolean := false
+  );
+  
+  type CT_NumFmtMap is table of CT_NumFmt index by pls_integer;
 
   type CT_Fill is record (
     patternFill   CT_PatternFill
@@ -101,6 +113,18 @@ create or replace package ExcelTypes is
   , alignment     CT_CellAlignment
   );
   
+  type CT_TextRun is record (
+    text  varchar2(32767)
+  , font  CT_Font
+  );
+  
+  type CT_TextRunList is table of CT_TextRun;
+  
+  type CT_RichText is record (
+    runs     CT_TextRunList
+  , content  varchar2(32767)
+  );
+  
   type colorMap_t is table of varchar2(6) index by varchar2(20);
   function getColorMap return colorMap_t;
   
@@ -110,6 +134,7 @@ create or replace package ExcelTypes is
   function isValidBorderStyle (p_borderStyle in varchar2) return boolean;
   function isValidHorizontalAlignment (p_hAlignment in varchar2) return boolean;
   function isValidVerticalAlignment (p_vAlignment in varchar2) return boolean;
+  function isValidFontVerticalAlignment (p_fontVertAlign in varchar2) return boolean;
   
   function makeRgbColor (r in uint8, g in uint8, b in uint8, a in number default null) return varchar2;
   function validateColor (colorSpec in varchar2) return varchar2;
@@ -118,6 +143,13 @@ create or replace package ExcelTypes is
   function getBorderStyleId (p_borderStyle in varchar2) return pls_integer;
   function getHorizontalAlignmentId (p_hAlignment in varchar2) return pls_integer;
   function getVerticalAlignmentId (p_vAlignment in varchar2) return pls_integer;
+  function getFontVerticalAlignmentId (p_fontVertAlign in varchar2) return pls_integer;
+
+  function makeNumFmt (
+    numFmtId in pls_integer
+  , formatCode in varchar2
+  ) 
+  return CT_NumFmt;
 
   function makeBorderPr (
     p_style  in varchar2 default null
@@ -140,12 +172,13 @@ create or replace package ExcelTypes is
   return CT_Border;
 
   function makeFont (
-    p_name   in varchar2 default null
-  , p_sz     in pls_integer default null
-  , p_b      in boolean default false
-  , p_i      in boolean default false
-  , p_color  in varchar2 default null
-  , p_u      in varchar2 default null
+    p_name       in varchar2 default null
+  , p_sz         in pls_integer default null
+  , p_b          in boolean default false
+  , p_i          in boolean default false
+  , p_color      in varchar2 default null
+  , p_u          in varchar2 default null
+  , p_vertAlign  in varchar2 default null
   )
   return CT_Font;
   
@@ -180,9 +213,15 @@ create or replace package ExcelTypes is
   , p_wrapText    in boolean default false
   )
   return CT_CellAlignment;
+
+  function makeRichText (
+    p_content   in xmltype
+  , p_rootFont  in CT_Font
+  )
+  return CT_RichText;
   
   function mergeBorders (masterBorder in CT_Border, border in CT_Border) return CT_Border;
-  function mergeFonts (masterFont in CT_Font, font in CT_Font) return CT_Font;
+  function mergeFonts (masterFont in CT_Font, font in CT_Font, force in boolean default false) return CT_Font;
   function mergePatternFills (masterFill in CT_Fill, fill in CT_Fill) return CT_Fill;
   function mergeAlignments (masterAlignment in CT_CellAlignment, alignment in CT_CellAlignment) return CT_CellAlignment;
   
@@ -191,6 +230,9 @@ create or replace package ExcelTypes is
   function getStyleFromCss (cssString in varchar2) return CT_Style;
   
   procedure testCss (cssString in varchar2);
+  
+  function fromOADate (p_value in number, p_scale in pls_integer default 0) return timestamp_unconstrained;
+  function getBuiltInDateFmts return CT_NumFmtMap;
   
   procedure setDebug (p_status in boolean);
 

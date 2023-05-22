@@ -37,6 +37,8 @@ create or replace package body xutl_xlsb is
   BRT_BEGINSST          constant pls_integer := 159;
   BRT_BEGINAFILTER      constant pls_integer := 161;
   BRT_MERGECELL         constant pls_integer := 176;
+  BRT_BEGINSTYLESHEET   constant pls_integer := 278;
+  BRT_ENDSTYLESHEET     constant pls_integer := 279;
   BRT_BEGINLIST         constant pls_integer := 343;
   BRT_BEGINLISTCOL      constant pls_integer := 347;
   BRT_BEGINCOLINFOS     constant pls_integer := 390;
@@ -44,6 +46,10 @@ create or replace package body xutl_xlsb is
   BRT_EXTERNSHEET       constant pls_integer := 362;
   BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
+  BRT_BEGINFMTS         constant pls_integer := 615;
+  BRT_ENDFMTS           constant pls_integer := 616;
+  BRT_BEGINCELLXFS      constant pls_integer := 617;
+  BRT_ENDCELLXFS        constant pls_integer := 618;
   BRT_BEGINCOMMENTS     constant pls_integer := 628;
   BRT_ENDCOMMENTLIST    constant pls_integer := 634;
   BRT_BEGINCOMMENT      constant pls_integer := 635;
@@ -142,6 +148,8 @@ create or replace package body xutl_xlsb is
   type CommentMap_T is table of varchar2(32767) index by varchar2(10); -- cell comment indexed by cellref
   type Comments_T is table of CommentMap_T index by pls_integer; -- comment map indexed by sheet index
   
+  type dateXfMap_t is table of ExcelTypes.CT_NumFmt index by pls_integer;
+  
   type Context_T is record (
     stream      Stream_T
   , sst         SST_T
@@ -151,6 +159,7 @@ create or replace package body xutl_xlsb is
   , sheetList   SheetList_T
   , curr_sheet  pls_integer
   , comments    Comments_T
+  , dtStyles    dateXfMap_t
   );
   
   type Context_cache_T is table of Context_T index by pls_integer;
@@ -359,7 +368,7 @@ create or replace package body xutl_xlsb is
   )
   return boolean
   is
-    bitmask  raw(1) := BITMASKTABLE(bitNum);
+    bitmask  raw(1) := BITMASKTABLE(bitNum+1);
   begin
     return ( utl_raw.bit_and(byteVal, bitmask) = bitmask );
   end;
@@ -495,7 +504,7 @@ create or replace package body xutl_xlsb is
 
   procedure seek_first (
     stream       in out nocopy Stream_T
-  , record_type  in raw  
+  , record_type  in pls_integer  
   )
   is
   begin
@@ -708,93 +717,69 @@ create or replace package body xutl_xlsb is
       
     end if;
   end;
-
-  procedure write_XLString (
+  
+  procedure write_XLWideString (
     rec       in out nocopy Record_T
-  , strValue  in varchar2
-  , stType    in pls_integer default ST_SIMPLE
+  , strValue  in varchar2 default null
+  , lobValue  in clob default null
   )
   is
-    --amt     pls_integer;
-    --cbuf    varchar2(32764);
     cch     pls_integer;
     csname  varchar2(30) := 'AL16UTF16LE';
-    --offset  integer := 1;
-    --rem     integer;
+    amt     pls_integer;
+    cbuf    varchar2(32764);
+    offset  integer := 1;
+    rem     integer;
   begin
-    if stType = ST_RICHSTR then
-      write_record(rec, '00'); -- fRichStr, fExtStr, unused1
-    end if;
-    cch := nvl(length(strValue), 0);
-    write_record(rec, int2raw(cch)); -- cchCharacters
-    -- rgchData
-    if cch < 16384 then
-      write_record(rec, utl_i18n.string_to_raw(strValue, csname));
-    else
-      write_record(rec, utl_i18n.string_to_raw(substr(strValue, 1, 16383), csname));
-      write_record(rec, utl_i18n.string_to_raw(substr(strValue, 16384, 32766), csname));
-      if cch = 32767 then
-        write_record(rec, utl_i18n.string_to_raw(substr(strValue, 32767, 1), csname));
-      end if;
-    end if;
-    /*
-    if str.is_lob then
-      cch := least(dbms_lob.getlength(str.lobValue), 32767);
+    if lobValue is null then
+      
+      cch := nvl(length(strValue), 0);
       write_record(rec, int2raw(cch)); -- cchCharacters
+      -- rgchData
+      if cch < 16384 then
+        write_record(rec, utl_i18n.string_to_raw(strValue, csname));
+      else
+        write_record(rec, utl_i18n.string_to_raw(substr(strValue, 1, 16383), csname));
+        write_record(rec, utl_i18n.string_to_raw(substr(strValue, 16384, 32766), csname));
+        if cch = 32767 then
+          write_record(rec, utl_i18n.string_to_raw(substr(strValue, 32767, 1), csname));
+        end if;
+      end if;
+      
+    else
+
+      cch := least(dbms_lob.getlength(lobValue), 32767);
+      write_record(rec, int2raw(cch));  -- cchCharacters
       rem := cch;
       -- rgchData
       while rem != 0 loop
         amt := least(8191, rem);
-        dbms_lob.read(str.lobValue, amt, offset, cbuf);
+        dbms_lob.read(lobValue, amt, offset, cbuf);
         offset := offset + amt;
         rem := rem - amt;
         write_record(rec, utl_i18n.string_to_raw(cbuf, csname));
       end loop;
-    else
-      cch := length(str.strValue);
-      write_record(rec, int2raw(cch)); -- cchCharacters
-      -- rgchData
-      if cch < 16384 then
-        write_record(rec, utl_i18n.string_to_raw(str.strValue, csname));
-      else
-        write_record(rec, utl_i18n.string_to_raw(substr(str.strValue, 1, 16383), csname));
-        write_record(rec, utl_i18n.string_to_raw(substr(str.strValue, 16384, 32766), csname));
-        if cch = 32767 then
-          write_record(rec, utl_i18n.string_to_raw(substr(str.strValue, 32767, 1), csname));
-        end if;
-      end if;
+      
     end if;
-    */
-  end;
+  end;  
 
-  procedure write_XLStringLob (
-    rec       in out nocopy Record_T
-  , lobValue  in clob
-  , stType    in pls_integer default ST_SIMPLE
+  procedure write_RichStr (
+    rec          in out nocopy Record_T
+  , strValue     in varchar2
+  , strRunArray  in StrRunArray_T
   )
   is
-    amt     pls_integer;
-    cbuf    varchar2(32764);
-    cch     pls_integer;
-    csname  varchar2(30) := 'AL16UTF16LE';
-    offset  integer := 1;
-    rem     integer;
+    isRichStr  boolean := ( strRunArray is not null );
   begin
-    if stType = ST_RICHSTR then
-      write_record(rec, '00');  -- fRichStr, fExtStr, unused1
-    end if;    
-
-    cch := least(dbms_lob.getlength(lobValue), 32767);
-    write_record(rec, int2raw(cch));  -- cchCharacters
-    rem := cch;
-    -- rgchData
-    while rem != 0 loop
-      amt := least(8191, rem);
-      dbms_lob.read(lobValue, amt, offset, cbuf);
-      offset := offset + amt;
-      rem := rem - amt;
-      write_record(rec, utl_i18n.string_to_raw(cbuf, csname));
-    end loop;
+    write_record(rec, bitVector(case when isRichStr then 1 else 0 end)); -- fRichStr, fExtStr, unused1
+    write_XLWideString(rec, strValue);
+    if isRichStr then
+      write_record(rec, int2raw(strRunArray.count));  -- dwSizeStrRun
+      for i in 1 .. strRunArray.count loop            -- rgsStrRun
+        write_record(rec, int2raw(strRunArray(i).ich, 2));  -- ich
+        write_record(rec, int2raw(strRunArray(i).ifnt, 2)); -- ifnt
+      end loop;
+    end if;
   end;
   
   procedure write_RfX (
@@ -821,7 +806,7 @@ create or replace package body xutl_xlsb is
     numFmt  Record_T := new_record(BRT_FMT);
   begin
     write_record(numFmt, int2raw(id, 2));  -- ifmt
-    write_XLString(numFmt, fmt);           -- stFmtCode
+    write_XLWideString(numFmt, fmt);           -- stFmtCode
     return numFmt;
   end;
   
@@ -837,14 +822,14 @@ create or replace package body xutl_xlsb is
     write_record(rec, int2raw( case when font.i then 2 else 0 end  -- bit1 : fItalic
                                , 2 ));
     write_record(rec, case when font.b then 'BC02' else '9001' end);  -- bls
-    write_record(rec, '0000');  -- sss : None
+    write_record(rec, int2raw(ExcelTypes.getFontVerticalAlignmentId(nvl(font.vertAlign,'baseline')), 2));  -- sss
     write_record(rec, int2raw(ExcelTypes.getUnderlineStyleId(nvl(font.u,'none')), 1));  -- uls
     write_record(rec, '00');    -- bFamily : Not applicable
     write_record(rec, '01');    -- bCharset : DEFAULT_CHARSET
     write_record(rec, '00');    -- unused
     write_record(rec, make_BrtColor(font.color));
     write_record(rec, '00');    -- bFontScheme : None
-    write_XLString(rec, nvl(font.name, ExcelTypes.DEFAULT_FONT_FAMILY));  -- name
+    write_XLWideString(rec, nvl(font.name, ExcelTypes.DEFAULT_FONT_FAMILY));  -- name
   
     return rec;
   end;
@@ -993,7 +978,7 @@ create or replace package body xutl_xlsb is
     write_record(rec, '0100');                -- grbitObj1 : fBuiltIn=1
     write_record(rec, int2raw(builtInId,1));  -- iStyBuiltIn : Normal
     write_record(rec, 'FF');                  -- iLevel (ignored)
-    write_XLString(rec, styleName);           -- stName
+    write_XLWideString(rec, styleName);       -- stName
     return rec;
   end;
   
@@ -1008,8 +993,8 @@ create or replace package body xutl_xlsb is
   begin
     write_record(sh, '00000000');        -- hsState : VISIBLE
     write_record(sh, int2raw(sheetId));  -- iTabID
-    write_XLString(sh, relId);           -- strRelID
-    write_XLString(sh, sheetName);       -- strName
+    write_XLWideString(sh, relId);       -- strRelID
+    write_XLWideString(sh, sheetName);   -- strName
     return sh;
   end;
   
@@ -1055,7 +1040,7 @@ create or replace package body xutl_xlsb is
     
     write_record(rec, '00'); -- chKey
     write_record(rec, int2raw(bundleShIndex)); -- itab
-    write_XLString(rec, '_FilterDatabase'); -- name
+    write_XLWideString(rec, '_FilterDatabase'); -- name
     -- <BrtName.formula 
     write_record(rec, '0F000000'); -- cce
      
@@ -1242,7 +1227,7 @@ create or replace package body xutl_xlsb is
   is
     rec  Record_T := new_record(BRT_LISTPART);
   begin
-    write_XLString(rec, relId);
+    write_XLWideString(rec, relId);
     return rec;
   end;
   
@@ -1279,9 +1264,9 @@ create or replace package body xutl_xlsb is
     write_record(rec, 'FFFFFFFF');  -- nDxfHeaderBorder
     write_record(rec, 'FFFFFFFF');  -- nDxfAggBorder
     write_record(rec, '00000000');  -- dwConnID
-    write_XLString(rec, name);         -- stName
-    write_XLString(rec, displayName);  -- stDisplayName
-    write_XLString(rec, null);         -- stComment
+    write_XLWideString(rec, name);         -- stName
+    write_XLWideString(rec, displayName);  -- stDisplayName
+    write_record(rec, 'FFFFFFFF');  -- stComment : NULL
     write_record(rec, 'FFFFFFFF');  -- stStyleHeader : NULL
     write_record(rec, 'FFFFFFFF');  -- stStyleData : NULL
     write_record(rec, 'FFFFFFFF');  -- stStyleAgg : NULL
@@ -1304,7 +1289,7 @@ create or replace package body xutl_xlsb is
     write_record(rec, 'FFFFFFFF');   -- nDxfAgg
     write_record(rec, '00000000');   -- idqsif
     write_record(rec, 'FFFFFFFF');   -- stName : NULL
-    write_XLString(rec, fieldName);  -- stCaption
+    write_XLWideString(rec, fieldName);  -- stCaption
     write_record(rec, 'FFFFFFFF');  -- stTotal : NULL
     write_record(rec, 'FFFFFFFF');  -- stStyleHeader : NULL
     write_record(rec, 'FFFFFFFF');  -- stStyleInsertRow : NULL
@@ -1336,7 +1321,7 @@ create or replace package body xutl_xlsb is
     write_record(rec, '00');  -- reserved
     -- stStyleName :
     if tableStyleName is not null then
-      write_XLString(rec, tableStyleName);
+      write_XLWideString(rec, tableStyleName);
     else
       write_record(rec, 'FFFFFFFF'); -- NULL
     end if;
@@ -1472,11 +1457,7 @@ create or replace package body xutl_xlsb is
   is
     rec  Record_T := make_Cell(BRT_CELLST, colIndex, styleRef);
   begin
-    if lobValue is not null then
-      write_XLStringLob(rec, lobValue);
-    else
-      write_XLString(rec, strValue);
-    end if;
+    write_XLWideString(rec, strValue, lobValue);
     put_record(stream, rec);
   end;
   
@@ -1494,13 +1475,14 @@ create or replace package body xutl_xlsb is
   end;
   
   procedure put_SSTItem (
-    stream  in out nocopy stream_t
-  , str     in varchar2
+    stream       in out nocopy stream_t
+  , str          in varchar2
+  , strRunArray  in StrRunArray_T default null
   )
   is
     rec  Record_T := new_record(BRT_SSTITEM);
   begin
-    write_XLString(rec, str, ST_RICHSTR);
+    write_RichStr(rec, str, strRunArray);
     put_record(stream, rec);
   end;
   
@@ -1929,8 +1911,8 @@ create or replace package body xutl_xlsb is
     nm  number;
   begin
     rk.RkNumber := read_bytes(stream, 4);
-    rk.fX100 := is_bit_set(utl_raw.substr(rk.RkNumber,1,1), 1);
-    rk.fInt := is_bit_set(utl_raw.substr(rk.RkNumber,1,1), 2);
+    rk.fX100 := is_bit_set(utl_raw.substr(rk.RkNumber,1,1), 0);
+    rk.fInt := is_bit_set(utl_raw.substr(rk.RkNumber,1,1), 1);
     
     rk.RkNumber := utl_raw.bit_and(rk.RkNumber, 'FCFFFFFF');
     if rk.fInt then 
@@ -1984,8 +1966,8 @@ create or replace package body xutl_xlsb is
     
     if stType = ST_RICHSTR then
       raw1 := read_bytes(stream, 1);
-      str.fRichStr := is_bit_set(raw1, 1);
-      str.fExtStr := is_bit_set(raw1, 2);
+      str.fRichStr := is_bit_set(raw1, 0);
+      str.fExtStr := is_bit_set(raw1, 1);
     end if;
     
     str.cch := read_int32(stream);
@@ -2155,21 +2137,40 @@ create or replace package body xutl_xlsb is
   )
   return ExcelTableCellList
   is
-    rcnt      pls_integer := 1;
-    rw        pls_integer := ctx.curr_rw;
-    col       pls_integer;
-    num       number;
-    str       String_T;
-    emptyRow  boolean := true;
+    rcnt       pls_integer := 1;
+    rw         pls_integer := ctx.curr_rw;
+    col        pls_integer;
+    num        number;
+    str        String_T;
+    emptyRow   boolean := true;
+    xfId       pls_integer;
+    dateXfMap  dateXfMap_t := ctx.dtStyles;
     
     cells  ExcelTableCellList := ExcelTableCellList();
     
     procedure read_col is
     begin
       col := read_int32(ctx.stream);
-      skip(ctx.stream, 4); -- iStyleRef, fPhShow, reserved
+      xfId := utl_raw.cast_to_binary_integer(
+                utl_raw.bit_and(read_bytes(ctx.stream, 4), 'FFFFFF00') -- iStyleRef (24 bits)
+              , utl_raw.little_endian
+              );
+      --skip(ctx.stream, 4); -- iStyleRef, fPhShow, reserved
     end;
-
+    
+    function convertNumData return anydata is
+    begin
+      if dateXfMap.exists(xfId) then
+        if dateXfMap(xfId).isTimestamp then
+          return anydata.ConvertTimestamp(ExcelTypes.fromOADate(num,3));
+        else
+          return anydata.ConvertDate(ExcelTypes.fromOADate(num));
+        end if;
+      else 
+        return anydata.ConvertNumber(num);
+      end if;      
+    end;  
+    
     function get_comment (cell_ref in varchar2) return varchar2 is
     begin
       if ctx.comments.exists(ctx.curr_sheet) and ctx.comments(ctx.curr_sheet).exists(cell_ref) then
@@ -2236,8 +2237,8 @@ create or replace package body xutl_xlsb is
         when BRT_CELLRK    then
           
           read_col;
-          num := read_RK(ctx.stream);
-          add_cell(anydata.ConvertNumber(num));
+          num := read_RK(ctx.stream);          
+          add_cell(convertNumData);
         
         when BRT_CELLERROR then
           
@@ -2255,7 +2256,7 @@ create or replace package body xutl_xlsb is
           
           read_col;
           num := read_Number(ctx.stream);
-          add_cell(anydata.ConvertNumber(num));
+          add_cell(convertNumData);
           
         when BRT_CELLST    then
           
@@ -2291,7 +2292,7 @@ create or replace package body xutl_xlsb is
         
           read_col;
           num := read_Number(ctx.stream);
-          add_cell(anydata.ConvertNumber(num));
+          add_cell(convertNumData);
         
         when BRT_FMLABOOL  then
         
@@ -2399,11 +2400,76 @@ create or replace package body xutl_xlsb is
 
   end;
   
+  function read_Styles (
+    content  in blob
+  )
+  return dateXfMap_t
+  is
+    stream      Stream_T;
+    cnt         pls_integer;
+    numFmtId    pls_integer;
+    numFmt      ExcelTypes.CT_NumFmt;
+    numFmtMap   ExcelTypes.CT_NumFmtMap := ExcelTypes.getBuiltInDateFmts();
+    dateXfMap   dateXfMap_t;
+    raw1        raw(1);
+    xfId        pls_integer := 0;
+  begin
+    stream := open_stream(content);
+    next_record(stream);
+    expect(stream, BRT_BEGINSTYLESHEET);
+    
+    -- read BrtFmt records
+    seek_first(stream, BRT_BEGINFMTS);
+    if stream.rt = BRT_BEGINFMTS then
+      cnt := read_int32(stream);
+      if cnt != 0 then
+
+        while stream.rt != BRT_ENDFMTS loop    
+          if stream.rt = BRT_FMT then
+            numFmt := ExcelTypes.makeNumFmt(
+                        numFmtId   => read_int16(stream)
+                      , formatCode => read_XLString(stream).strValue
+                      );
+            if numFmt.isDate then
+              numFmtMap(numFmt.numFmtId) := numFmt;
+            end if;
+          end if;
+          next_record(stream);
+        end loop;
+        
+        if numFmtMap.count != 0 then
+          -- read BrtXf records
+          seek_first(stream, BRT_BEGINCELLXFS);
+          while stream.rt != BRT_ENDCELLXFS loop    
+            if stream.rt = BRT_XF then
+              skip(stream, 2); -- ixfeParent
+              numFmtId := read_int16(stream); -- iFmt
+              skip(stream, 4); -- iFont, iFill
+              skip(stream, 4); -- ixBorder, trot, indent
+              skip(stream, 2); -- alc, alcv, A-I
+              raw1 := read_bytes(stream, 1); -- xfGrbitAtr
+              if is_bit_set(raw1, 0) and numFmtMap.exists(numFmtId) then
+                dateXfMap(xfId) := numFmtMap(numFmtId);
+              end if;
+              xfId := xfId + 1;
+            end if;
+            next_record(stream);
+          end loop;          
+        
+        end if;
+                
+      end if;
+    end if;
+    close_stream(stream);
+    return dateXfMap;
+  end;
+  
   function new_context (
     p_sst_part  in blob
   , p_cols      in varchar2 default null
   , p_firstRow  in pls_integer default null
   , p_lastRow   in pls_integer default null
+  , p_styles    in blob default null
   )
   return pls_integer
   is
@@ -2413,6 +2479,10 @@ create or replace package body xutl_xlsb is
       
     if p_sst_part is not null then
       read_sst(p_sst_part, ctx.sst);
+    end if;
+    
+    if p_styles is not null then
+      ctx.dtStyles := read_Styles(p_styles);
     end if;
   
     ctx.rng.firstRow := nvl(p_firstRow, 1) - 1;

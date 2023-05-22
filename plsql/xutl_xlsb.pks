@@ -3,7 +3,7 @@ create or replace package xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2022 Marc Bleron
+  Copyright (c) 2018-2023 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -41,12 +41,17 @@ create or replace package xutl_xlsb is
                                      Added BrtMergeCell
                                      Added BrtWsFmtInfo
     Marc Bleron       2022-11-04     Added gradientFill
+    Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
+                                     and rich text support
+    Marc Bleron       2023-05-03     Added date style detection
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
   type SheetEntries_T is table of SheetEntry_T;
   type SupportingLink_T is record (externalLink pls_integer, firstSheet pls_integer, lastSheet pls_integer);
   type SupportingLinks_T is table of SupportingLink_T index by pls_integer;
+  type StrRun_T is record (ich pls_integer, ifnt pls_integer);
+  type StrRunArray_T is table of StrRun_T;
   
   type Stream_T is record (
     content    blob
@@ -118,8 +123,9 @@ create or replace package xutl_xlsb is
   );
 
   procedure put_SSTItem (
-    stream  in out nocopy stream_t
-  , str     in varchar2
+    stream       in out nocopy stream_t
+  , str          in varchar2
+  , strRunArray  in StrRunArray_T default null
   );
   
   procedure put_ExternSheet (
@@ -282,7 +288,8 @@ create or replace package xutl_xlsb is
     p_sst_part  in blob
   , p_cols      in varchar2 default null
   , p_firstRow  in pls_integer default null
-  , p_lastRow   in pls_integer default null    
+  , p_lastRow   in pls_integer default null
+  , p_styles    in blob default null
   )
   return pls_integer;
 
