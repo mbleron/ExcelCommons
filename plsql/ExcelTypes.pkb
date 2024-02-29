@@ -77,12 +77,13 @@ create or replace package body ExcelTypes is
   type componentList_t is table of component_t;
   type declaration_t is record (name varchar2(256), v componentList_t, argListMap tokenListMap_t);
   type declarationList_t is table of declaration_t;
+  type stringList_t is table of varchar2(256);
   
   type rgbColor_t is record (r pls_integer, g pls_integer, b pls_integer, a number);
   type cssBorderSide_t is record (style varchar2(256) := 'none', width varchar2(256) := 'medium', color varchar2(256));
   type cssBorder_t is record (top cssBorderSide_t, right cssBorderSide_t, bottom cssBorderSide_t, left cssBorderSide_t);
   type cssFont_t is record (family varchar2(256), sz varchar2(256), style varchar2(256) := '', weight varchar2(256) := '');
-  type cssTextDecoration_t is record (line varchar2(256) := '', style varchar2(256) := 'solid');
+  type cssTextDecoration_t is record (line stringList_t := stringList_t(), style varchar2(256) := 'solid');
   type cssMsoPattern_t is record (patternType varchar2(256) := 'none', color varchar2(256));
   
   type colorStop_t is record (colorHint number, color varchar2(256), pct1 number, pct2 number);
@@ -90,17 +91,20 @@ create or replace package body ExcelTypes is
   type linearGradient_t is record (angle number, colorStopList colorStopList_t);
   
   type cssStyle_t is record (
-    border           cssBorder_t
-  , font             cssFont_t
-  , textDecoration   cssTextDecoration_t
-  , verticalAlign    varchar2(256)
-  , textAlign        varchar2(256)
-  , whiteSpace       varchar2(256) := 'pre'
-  , msoPattern       cssMsoPattern_t
-  , msoNumberFormat  varchar2(256)
-  , color            varchar2(256)
-  , backgroundColor  varchar2(256)
-  , backgroundImage  linearGradient_t
+    border              cssBorder_t
+  , font                cssFont_t
+  , textDecoration      cssTextDecoration_t
+  , verticalAlign       varchar2(256)
+  , textAlign           varchar2(256)
+  , whiteSpace          varchar2(256) := 'pre'
+  , msoPattern          cssMsoPattern_t
+  , msoNumberFormat     varchar2(256)
+  , color               varchar2(256)
+  , backgroundColor     varchar2(256)
+  , backgroundImage     linearGradient_t
+  , rotate              number
+  , textOrientation     varchar2(256)
+  , msoCharIndentCount  number
   );
   
   functionArgListCache  tokenListMap_t;
@@ -117,7 +121,29 @@ create or replace package body ExcelTypes is
   
   builtInDateFmtMap  CT_NumFmtMap;
   
-  debug_enabled  boolean := false;
+  debug_enabled      boolean := false;
+  nls_decimal_sep    varchar2(1);
+
+  function getNLS (p_name in varchar2) 
+  return varchar2 
+  is
+    result  nls_session_parameters.value%type;
+  begin
+    select value
+    into result
+    from nls_session_parameters
+    where parameter = p_name ;
+    return result;
+  exception
+    when no_data_found then
+      return null;
+  end;
+  
+  procedure setNLSCache
+  is
+  begin
+    nls_decimal_sep := substr(getNLS('NLS_NUMERIC_CHARACTERS'), 1, 1);
+  end;
   
   procedure setDebug (p_status in boolean)
   is
@@ -176,7 +202,7 @@ create or replace package body ExcelTypes is
   procedure initialize
   is
   begin
-    
+  
     -- CSS token labels
     loadCssTokenLabels;
     
@@ -509,6 +535,9 @@ create or replace package body ExcelTypes is
     if font.i then
       stringWrite(font.content, '<i/>');
     end if;
+    if font.strike then
+      stringWrite(font.content, '<strike/>');
+    end if;
     if font.color is not null then
       if font.color like 'theme:%' then
         stringWrite(font.content, '<color theme="'||regexp_substr(font.color,'\d+$')||'"/>');
@@ -562,7 +591,12 @@ create or replace package body ExcelTypes is
   is
   begin
     alignment.content := null;
-    if coalesce(alignment.horizontal, alignment.vertical) is not null or alignment.wrapText then
+    if coalesce(alignment.horizontal, alignment.vertical) is not null 
+      or alignment.wrapText 
+      or alignment.textRotation is not null
+      or alignment.verticalText
+      or alignment.indent is not null
+    then
       stringWrite(alignment.content, '<alignment');
       if alignment.horizontal is not null then
         stringWrite(alignment.content, ' horizontal="'||alignment.horizontal||'"');
@@ -572,6 +606,14 @@ create or replace package body ExcelTypes is
       end if;
       if alignment.wrapText then
         stringWrite(alignment.content, ' wrapText="1"');
+      end if;
+      if alignment.textRotation is not null then
+        stringWrite(alignment.content, ' textRotation="'||to_char(round(alignment.textRotation))||'"');
+      elsif alignment.verticalText then
+        stringWrite(alignment.content, ' textRotation="255"');
+      end if;
+      if alignment.indent is not null then
+        stringWrite(alignment.content, ' indent="'||to_char(round(alignment.indent))||'"');
       end if;
       stringWrite(alignment.content, '/>');
     end if;    
@@ -642,6 +684,7 @@ create or replace package body ExcelTypes is
   , p_color      in varchar2 default null
   , p_u          in varchar2 default null
   , p_vertAlign  in varchar2 default null
+  , p_strike     in boolean default false
   )
   return CT_Font
   is
@@ -655,6 +698,7 @@ create or replace package body ExcelTypes is
     end if;
     font.b := nvl(p_b, false);
     font.i := nvl(p_i, false);
+    font.strike := nvl(p_strike, false);
     
     if p_u is not null then 
       if isValidUnderlineStyle(p_u) then
@@ -690,6 +734,9 @@ create or replace package body ExcelTypes is
     end if;
     if font.i then
       stringWrite(rPr, '<i/>');
+    end if;
+    if font.strike then
+      stringWrite(rPr, '<strike/>');
     end if;
     if font.u is not null and font.u != 'none' then
       if font.u = 'single' then
@@ -775,9 +822,12 @@ create or replace package body ExcelTypes is
   end;
 
   function makeAlignment (
-    p_horizontal  in varchar2 default null
-  , p_vertical    in varchar2 default null
-  , p_wrapText    in boolean default false
+    p_horizontal    in varchar2 default null
+  , p_vertical      in varchar2 default null
+  , p_wrapText      in boolean default false
+  , p_textRotation  in number default null
+  , p_verticalText  in boolean default false
+  , p_indent        in number default null
   )
   return CT_CellAlignment
   is
@@ -786,6 +836,24 @@ create or replace package body ExcelTypes is
     alignment.horizontal := p_horizontal;
     alignment.vertical := p_vertical;
     alignment.wrapText := p_wrapText;
+    
+    if p_textRotation not between -90 and 90 then
+      error('Text rotation angle out of range: %d', p_textRotation);
+    end if;
+    -- translate to internal value
+    alignment.textRotation := case when p_textRotation < 0 then 90 - p_textRotation else p_textRotation end;
+    /*
+    if p_verticalText and alignment.textRotation is not null then
+      error('Cannot set Text Rotation and Vertical Text concurrently');
+    end if;
+    */
+    alignment.verticalText := nvl(p_verticalText, false);
+    
+    if p_indent not between 0 and 250 then
+      error('Indentation level out of range: %d', p_indent);
+    end if;
+    alignment.indent := p_indent;
+    
     setAlignmentContent(alignment);
     return alignment;
   end;
@@ -851,6 +919,9 @@ create or replace package body ExcelTypes is
     if font.i is not null and ( font.i or force ) then
       mergedFont.i := font.i;
     end if;
+    if font.strike is not null and ( font.strike or force ) then
+      mergedFont.strike := font.strike;
+    end if;
     if font.u is not null and ( font.u != 'none' or force ) then
       mergedFont.u := font.u;
     end if;
@@ -912,6 +983,18 @@ create or replace package body ExcelTypes is
     
     if not mergedAlignment.wrapText then
       mergedAlignment.wrapText := masterAlignment.wrapText;
+    end if;
+    
+    if mergedAlignment.textRotation is null then
+      mergedAlignment.textRotation := masterAlignment.textRotation;
+    end if;
+    
+    if not mergedAlignment.verticalText then
+      mergedAlignment.verticalText := masterAlignment.verticalText;
+    end if;
+    
+    if mergedAlignment.indent is null then
+      mergedAlignment.indent := masterAlignment.indent;
     end if;
     
     setAlignmentContent(mergedAlignment);
@@ -982,6 +1065,8 @@ create or replace package body ExcelTypes is
             font.b := true;
           when 'i' then
             font.i := true;
+          when 's' then
+            font.strike := true;
           when 'u' then
             font.u := 'single';
           when 'span' then
@@ -1412,7 +1497,7 @@ create or replace package body ExcelTypes is
           append(token.v, cstream.c);
         end loop;       
       end if;
-      token.nv := to_number(token.v);
+      token.nv := to_number(replace(token.v, '.', nls_decimal_sep));
       
       if startsIdentSequence(nextChar(1), nextChar(2), nextChar(3)) then
         token.t := T_DIMENSION;
@@ -2502,22 +2587,24 @@ create or replace package body ExcelTypes is
     end case;
     
   end;
-
+  
   procedure parseCssTextDecoration (
     decl in declaration_t
   , textDecoration in out nocopy cssTextDecoration_t
   )
   is
-    valueCount  pls_integer := decl.v.count;
-    hasLine     boolean := false;
-    hasStyle    boolean := false;
+    textDecorationLine  stringList_t := stringList_t();
+    valueCount          pls_integer := decl.v.count;
+    hasLine             boolean := false;
+    hasStyle            boolean := false;
     
     function readLine (comp in component_t) return boolean is
     begin
       assertNotIsList(comp);
       if comp.token.t = T_IDENT then
-        if comp.token.v in ('none','underline') then
-          textDecoration.line := comp.token.v;
+        if comp.token.v in ('none','underline','line-through') then
+          textDecorationLine.extend;
+          textDecorationLine(textDecorationLine.last) := comp.token.v;
         else
           return false;
         end if;
@@ -2543,15 +2630,12 @@ create or replace package body ExcelTypes is
     end;
     
   begin
-    
-    if decl.name = 'text-decoration' then
-      assertValueCount(decl.name, valueCount, 2);
-    else
-      assertValueCount(decl.name, valueCount, 1);
-    end if;
-    
+            
     case decl.name 
     when 'text-decoration' then
+      
+      -- at most 3 properties expected: 2 for line (line-through, underline) and 1 for style
+      assertValueCount(decl.name, valueCount, 3);
       
       hasLine := readLine(decl.v(1));
       if not hasLine then
@@ -2564,24 +2648,75 @@ create or replace package body ExcelTypes is
       
       if valueCount > 1 then
         
-        if not hasLine then
-          hasLine := readLine(decl.v(2));
-        elsif not hasStyle then
-          hasStyle := readStyle(decl.v(2));
+        hasLine := readLine(decl.v(2));
+        if hasLine 
+           and textDecorationLine.count = 2
+           and ( textDecorationLine(1) = textDecorationLine(2) 
+              or textDecorationLine(1) = 'none'
+              or textDecorationLine(2) = 'none' )
+        then
+          error(CSS_INVALID_VALUE, decl.v(2).token.v);
         end if;
+        
+        if not hasLine and not hasStyle then
+          hasStyle := readStyle(decl.v(2)); 
+          if not hasStyle then
+            error(CSS_INVALID_VALUE, decl.v(2).token.v);
+          end if;
+        end if;
+        
+        if valueCount > 2 then
+        
+          hasLine := readLine(decl.v(3));
+          if hasLine 
+             and ( 
+               textDecorationLine.count = 3
+               or ( textDecorationLine.count = 2
+                    and ( textDecorationLine(1) = textDecorationLine(2) 
+                       or textDecorationLine(1) = 'none'
+                       or textDecorationLine(2) = 'none' ) ) )
+          then
+            error(CSS_INVALID_VALUE, decl.v(3).token.v);
+          end if;
+          
+          if not hasLine and not hasStyle then
+            hasStyle := readStyle(decl.v(3)); 
+            if not hasStyle then
+              error(CSS_INVALID_VALUE, decl.v(3).token.v);
+            end if;
+          end if;          
+        
+        end if;
+        
+      end if;
       
-        if not ( hasLine and hasStyle ) then
+      textDecoration.line := textDecorationLine;
+      
+    when 'text-decoration-line' then
+      -- at most two line values expected
+      assertValueCount(decl.name, valueCount, 2);
+      
+      if not readLine(decl.v(1)) then
+        error(CSS_INVALID_VALUE, decl.v(1).token.v);
+      end if;
+      
+      if valueCount > 1 then
+        
+        if not readLine(decl.v(2)) 
+           or textDecorationLine(1) = textDecorationLine(2) 
+           or textDecorationLine(1) = 'none'
+           or textDecorationLine(2) = 'none'
+        then
           error(CSS_INVALID_VALUE, decl.v(2).token.v);
         end if;
         
       end if;
       
-    when 'text-decoration-line' then
-      if not readLine(decl.v(1)) then
-        error(CSS_INVALID_VALUE, decl.v(1).token.v);
-      end if;
+      textDecoration.line := textDecorationLine;
       
     when 'text-decoration-style' then
+      -- only one style value expected
+      assertValueCount(decl.name, valueCount, 1);
       if not readStyle(decl.v(1)) then
         error(CSS_INVALID_VALUE, decl.v(1).token.v);
       end if;
@@ -2784,6 +2919,102 @@ create or replace package body ExcelTypes is
     end if;
     
   end;
+
+  procedure parseCssRotate (
+    decl    in declaration_t
+  , rotate  in out nocopy number
+  )
+  is
+    token  token_t;
+  begin
+    
+    assertValueCount(decl.name, decl.v.count, 1);
+    assertNotIsList(decl.v(1));
+    
+    token := decl.v(1).token;
+    
+    if token.t = T_DIMENSION then
+      
+      case token.u
+      when 'deg' then
+        rotate := token.nv;
+      when 'turn' then
+        rotate := token.nv * 360;
+      when 'rad' then
+        rotate := token.nv * 180 / acos(-1);
+      else
+        error(CSS_INVALID_VALUE, token.v);
+      end case;
+
+      if rotate not between -90 and 90 then
+        error('CSS rotate angle out of range: %d', token.v);
+      end if;
+    
+    elsif token.t =  T_IDENT and token.v = 'none' then
+      
+      null;
+      
+    else
+      
+      unexpectedToken(token);
+    
+    end if;
+    
+  end;
+
+  procedure parseCssTextOrientation (
+    decl             in declaration_t
+  , textOrientation  in out nocopy varchar2
+  )
+  is
+    token  token_t;
+  begin
+    
+    assertValueCount(decl.name, decl.v.count, 1);
+    assertNotIsList(decl.v(1));
+    
+    token := decl.v(1).token;
+    
+    if token.t = T_IDENT and token.v = 'upright' then
+      
+      textOrientation := token.v;
+      
+    else
+      
+      unexpectedToken(token);
+    
+    end if;
+    
+  end;
+
+  procedure parseCssMsoCharIndentCount (
+    decl                in declaration_t
+  , msoCharIndentCount  in out nocopy number
+  )
+  is
+    token  token_t;
+  begin
+    
+    assertValueCount(decl.name, decl.v.count, 1);
+    assertNotIsList(decl.v(1));
+    
+    token := decl.v(1).token;
+    
+    if token.t = T_NUMBER then
+      
+      if token.nv not between 0 and 250 then
+        error('''mso-char-indent-count'' must have a value between 0 and 250');
+      end if;
+    
+      msoCharIndentCount := token.nv;
+      
+    else
+      
+      unexpectedToken(token);
+    
+    end if;
+    
+  end;
   
   function parseCss (
     decls in declarationList_t
@@ -2950,6 +3181,14 @@ create or replace package body ExcelTypes is
         
         parseCssGradient(decl, css.backgroundImage);
         
+      when 'rotate' then
+        
+        parseCssRotate(decl, css.rotate);
+        
+      when 'text-orientation' then
+        
+        parseCssTextOrientation(decl, css.textOrientation);
+      
       when 'mso-number-format' then
         
         parseCssMsoNumberFormat(decl, css.msoNumberFormat);
@@ -2958,6 +3197,10 @@ create or replace package body ExcelTypes is
         
         parseCssMsoPattern(decl, css.msoPattern);
         
+      when 'mso-char-indent-count' then
+      
+        parseCssMsoCharIndentCount(decl, css.msoCharIndentCount);
+      
       else
         
         error('Unsupported CSS property: ''%s''', decl.name);
@@ -3036,20 +3279,21 @@ create or replace package body ExcelTypes is
     font.i := ( css.font.style = 'italic' );
     font.b := ( css.font.weight = 'bold' );
     
-    case css.textDecoration.line
-    when 'underline' then
-      font.u := case css.textDecoration.style
-                when 'solid' then 'single'
-                when 'double' then 'double'
-                when 'single-accounting' then 'singleAccounting'
-                when 'double-accounting' then 'doubleAccounting'
-                end;
-    
-    when 'none' then
-      font.u := 'none';
-    else
-      null;
-    end case;
+    for i in 1 .. css.textDecoration.line.count loop
+      case css.textDecoration.line(i)
+      when 'underline' then
+        font.u := case css.textDecoration.style
+                  when 'solid' then 'single'
+                  when 'double' then 'double'
+                  when 'single-accounting' then 'singleAccounting'
+                  when 'double-accounting' then 'doubleAccounting'
+                  end;
+      when 'line-through' then
+        font.strike := true;
+      when 'none' then
+        font.u := 'none';
+      end case;
+    end loop;
     
     if css.verticalAlign = 'sub' then
       font.vertAlign := 'subscript';
@@ -3090,6 +3334,17 @@ create or replace package body ExcelTypes is
                           end;
     
     alignment.wrapText := ( css.whiteSpace = 'pre-wrap' );
+    
+    if css.rotate is not null then
+      -- Contrary to Excel, a positive CSS angle represents a clockwise rotation
+      alignment.textRotation := case when css.rotate > 0 then 90 + css.rotate else -css.rotate end;
+    else
+      alignment.verticalText := ( css.textOrientation = 'upright' );
+    end if;
+    
+    if css.msoCharIndentCount is not null then
+      alignment.indent := css.msoCharIndentCount;
+    end if;
     
     setAlignmentContent(alignment);
     
@@ -3351,6 +3606,7 @@ create or replace package body ExcelTypes is
   
   function getStyleFromCss (cssString in varchar2) return CT_Style is
   begin
+    setNLSCache;
     return convertCss(parseCss(parseRawCss(cssString)));
   end;
   

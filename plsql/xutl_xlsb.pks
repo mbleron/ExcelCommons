@@ -3,7 +3,7 @@ create or replace package xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2023 Marc Bleron
+  Copyright (c) 2018-2024 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -44,6 +44,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
                                      and rich text support
     Marc Bleron       2023-05-03     Added date style detection
+    Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -258,9 +259,7 @@ create or replace package xutl_xlsb is
   , fontId      in pls_integer default 0
   , fillId      in pls_integer default 0
   , borderId    in pls_integer default 0
-  , hAlignment  in varchar2 default null
-  , vAlignment  in varchar2 default null
-  , wrapText    in boolean default false
+  , alignment   in ExcelTypes.CT_CellAlignment default null
   );
 
   procedure put_ColInfo (

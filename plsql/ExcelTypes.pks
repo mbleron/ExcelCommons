@@ -3,7 +3,7 @@ create or replace package ExcelTypes is
 
   MIT License
 
-  Copyright (c) 2021-2023 Marc Bleron
+  Copyright (c) 2021-2024 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -31,6 +31,8 @@ create or replace package ExcelTypes is
     Marc Bleron       2022-11-04     Added gradientFill
     Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
                                      and rich text support
+    Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
+                                     Added font strikethrough, text orientation, indent
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -61,6 +63,7 @@ create or replace package ExcelTypes is
   , color      varchar2(8)
   , sz         pls_integer
   , vertAlign  varchar2(16)
+  , strike     boolean := false
   , content    varchar2(32767)
   );
 
@@ -99,10 +102,13 @@ create or replace package ExcelTypes is
   );
   
   type CT_CellAlignment is record (
-    horizontal  varchar2(16)
-  , vertical    varchar2(16)
-  , wrapText    boolean
-  , content     varchar2(32767)
+    horizontal    varchar2(16)
+  , vertical      varchar2(16)
+  , wrapText      boolean
+  , textRotation  number
+  , verticalText  boolean := false
+  , indent        number
+  , content       varchar2(32767)
   );
   
   type CT_Style is record (
@@ -179,6 +185,7 @@ create or replace package ExcelTypes is
   , p_color      in varchar2 default null
   , p_u          in varchar2 default null
   , p_vertAlign  in varchar2 default null
+  , p_strike     in boolean default false
   )
   return CT_Font;
   
@@ -208,9 +215,12 @@ create or replace package ExcelTypes is
   );
 
   function makeAlignment (
-    p_horizontal  in varchar2 default null
-  , p_vertical    in varchar2 default null
-  , p_wrapText    in boolean default false
+    p_horizontal    in varchar2 default null
+  , p_vertical      in varchar2 default null
+  , p_wrapText      in boolean default false
+  , p_textRotation  in number default null
+  , p_verticalText  in boolean default false
+  , p_indent        in number default null
   )
   return CT_CellAlignment;
 

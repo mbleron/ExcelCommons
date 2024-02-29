@@ -44,6 +44,7 @@ create or replace package body xutl_xlsb is
   BRT_BEGINCOLINFOS     constant pls_integer := 390;
   BRT_ENDCOLINFOS       constant pls_integer := 391;
   BRT_EXTERNSHEET       constant pls_integer := 362;
+  BRT_ARRFMLA           constant pls_integer := 426;         
   BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
   BRT_BEGINFMTS         constant pls_integer := 615;
@@ -499,7 +500,7 @@ create or replace package body xutl_xlsb is
     stream.available := stream.rsize;
     -- current record start
     stream.rstart := stream.offset;
-    debug('RECORD INFO ['||to_char(stream.rstart,'FM0XXXXXXX')||']['||lpad(stream.rsize,6)||'] '||stream.rt);
+    --debug('RECORD INFO ['||to_char(stream.rstart,'FM0XXXXXXX')||']['||lpad(stream.rsize,6)||'] '||stream.rt);
   end;
 
   procedure seek_first (
@@ -819,8 +820,11 @@ create or replace package body xutl_xlsb is
   begin
     write_record(rec, int2raw(nvl(font.sz, ExcelTypes.DEFAULT_FONT_SIZE) * 20, 2));  -- dyHeight : font size in twips (1 twip = 1/20th pt)
     -- grbit
-    write_record(rec, int2raw( case when font.i then 2 else 0 end  -- bit1 : fItalic
-                               , 2 ));
+    write_record(rec, bitVector(
+                        b1 => case when font.i then 1 else 0 end  -- bit1 : fItalic
+                      , b3 => case when font.strike then 1 else 0 end --bit3 : fStrikeout
+                      ));
+    write_record(rec, '00'); -- FontFlags.unused3
     write_record(rec, case when font.b then 'BC02' else '9001' end);  -- bls
     write_record(rec, int2raw(ExcelTypes.getFontVerticalAlignmentId(nvl(font.vertAlign,'baseline')), 2));  -- sss
     write_record(rec, int2raw(ExcelTypes.getUnderlineStyleId(nvl(font.u,'none')), 1));  -- uls
@@ -906,14 +910,12 @@ create or replace package body xutl_xlsb is
   end;
 
   function make_XF (
-    xfId        in pls_integer default null
-  , numFmtId    in pls_integer default 0
-  , fontId      in pls_integer default 0
-  , fillId      in pls_integer default 0
-  , borderId    in pls_integer default 0
-  , hAlignment  in varchar2 default null
-  , vAlignment  in varchar2 default null
-  , wrapText    in boolean default false
+    xfId       in pls_integer default null
+  , numFmtId   in pls_integer default 0
+  , fontId     in pls_integer default 0
+  , fillId     in pls_integer default 0
+  , borderId   in pls_integer default 0
+  , alignment  in ExcelTypes.CT_CellAlignment default null
   )
   return Record_T
   is
@@ -924,13 +926,18 @@ create or replace package body xutl_xlsb is
     write_record(xf, int2raw(fontId,2));            -- iFont
     write_record(xf, int2raw(fillId,2));            -- iFill
     write_record(xf, int2raw(borderId,2));          -- ixBorder
-    write_record(xf, '00');  -- trot
-    write_record(xf, '00');  -- indent
+    write_record(xf, case 
+                     when alignment.textRotation is not null then int2raw(round(alignment.textRotation),1)
+                     when alignment.verticalText then 'FF'
+                     else '00'
+                     end );  -- trot
+    
+    write_record(xf, int2raw(nvl(round(alignment.indent),0),1));  -- indent
         
     write_record(xf, 
-      bitVector( b0 => ExcelTypes.getHorizontalAlignmentId(nvl(hAlignment,'general'))  -- alc (3 bits)
-               , b3 => ExcelTypes.getVerticalAlignmentId(nvl(vAlignment,'bottom'))     -- alcv (3 bits)
-               , b6 => case when wrapText then 1 else 0 end  -- fWrap
+      bitVector( b0 => ExcelTypes.getHorizontalAlignmentId(nvl(alignment.horizontal,'general'))  -- alc (3 bits)
+               , b3 => ExcelTypes.getVerticalAlignmentId(nvl(alignment.vertical,'bottom'))     -- alcv (3 bits)
+               , b6 => case when alignment.wrapText then 1 else 0 end  -- fWrap
                , b7 => 0  -- fJustLast
                )
     );
@@ -952,7 +959,7 @@ create or replace package body xutl_xlsb is
       bitVector(
         case when numFmtId != 0 then 1 else 0 end
       , case when fontId != 0 then 1 else 0 end
-      , case when hAlignment is not null or vAlignment is not null then 1 else 0 end
+      , case when alignment.horizontal is not null or alignment.vertical is not null then 1 else 0 end
       , case when borderId != 0 then 1 else 0 end
       , case when fillId != 0 then 1 else 0 end
       , 0  -- applyProtection
@@ -1740,9 +1747,7 @@ create or replace package body xutl_xlsb is
   , fontId      in pls_integer default 0
   , fillId      in pls_integer default 0
   , borderId    in pls_integer default 0
-  , hAlignment  in varchar2 default null
-  , vAlignment  in varchar2 default null
-  , wrapText    in boolean default false
+  , alignment   in ExcelTypes.CT_CellAlignment
   )
   is
   begin
@@ -1753,9 +1758,7 @@ create or replace package body xutl_xlsb is
                , fontId
                , fillId
                , borderId
-               , hAlignment
-               , vAlignment
-               , wrapText
+               , alignment
                ));    
   end;
 
@@ -2057,7 +2060,7 @@ create or replace package body xutl_xlsb is
           '%s %s %s' || case when stream.rsize != 0 then ' start=0x%s size=%d' end
         , lpad(stream.rt,4)
         , rpad('['||rawtohex(make_rt(stream.rt))||']',6)
-        , rpad(recordTypeLabelMap(stream.rt), 34)
+        , rpad(case when recordTypeLabelMap.exists(stream.rt) then recordTypeLabelMap(stream.rt) else '<Unknown>' end, 34)
         , to_char(stream.rstart - 1, 'fm0XXXXXXXXX')
         , stream.rsize
         )
@@ -2542,6 +2545,191 @@ create or replace package body xutl_xlsb is
     ctx_cache(p_ctx_id).sst.strings := String_Array_T();
     ctx_cache.delete(p_ctx_id);
   end;
+
+  /*procedure read_formulas (file in blob) is
+    stream      Stream_T;
+    recordName  varchar2(128);
+    intValue    pls_integer;
+    
+    byte1       raw(1);
+    byte2       raw(1);
+    readCount   pls_integer;
+    cce         pls_integer;
+    cb          pls_integer;
+    
+    rgceOffset  pls_integer;
+    
+    type ptg_t is record (id pls_integer, name varchar2(128), sz pls_integer, hasType boolean);
+    type ptgList_t is table of ptg_t index by pls_integer;
+    
+    type ptgExtraList_t is table of varchar2(128);
+    extras  ptgExtraList_t := ptgExtraList_t();
+    
+    ptgList  ptgList_t;
+    ptg      ptg_t;
+    ptgType  pls_integer;
+    
+    cnt  pls_integer;
+    
+    type uncheckedRfX_t is record (rwFirst pls_integer, rwLast pls_integer, colFirst pls_integer, colLast pls_integer);
+    rfx  uncheckedRfX_t;
+    
+  begin
+    
+    for r in ( select utl_raw.cast_to_binary_integer(utl_raw.concat(byte1,byte2)) as ptg, ptg_name, ptg_size, has_type from xlsb_ptg ) loop
+      ptgList(r.ptg).id := r.ptg;
+      ptgList(r.ptg).name := r.ptg_name;
+      ptgList(r.ptg).sz := r.ptg_size;
+      ptgList(r.ptg).hasType := ( r.has_type = 'Y' ); 
+    end loop;
+  
+    loadRecordTypeLabels;
+    stream := open_stream(file);
+
+    while stream.offset < stream.sz loop
+      next_record(stream);   
+      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA);
+      
+      debug('---------------------------');
+      debug(recordTypeLabelMap(stream.rt));
+      debug('---------------------------');
+      
+      if stream.rt = BRT_ARRFMLA then
+
+        skip(stream, 16); -- rfx
+        skip(stream, 1); -- A + unused
+        
+      else
+      
+        skip(stream, 8); -- Cell
+                
+        case stream.rt
+        when BRT_FMLASTRING then
+          intValue := read_int32(stream); -- cchCharacters
+          skip(stream, intValue * 2); -- rgchData
+        when BRT_FMLANUM then
+          skip(stream, 8); -- xnum
+        when BRT_FMLABOOL then
+          skip(stream, 1); -- bBool
+        when BRT_FMLAERROR then
+          skip(stream, 1); -- fErr
+        end case;
+          
+        skip(stream, 2); -- grbitFlags
+      
+      end if;
+        
+      debug('BEGIN ParsedFormula');
+      
+      extras.delete;
+      cce := read_int32(stream); -- cce
+      debug('cce='||cce);
+      
+      debug('BEGIN Rgce ['||to_char(stream.offset,'FM0XXXXXXX')||']');
+      
+      rgceOffset := 0;
+      
+      while rgceOffset < cce loop
+        
+        byte1 := read_bytes(stream, 1); -- ptg byte1
+        readCount := 1;
+        if byte1 in ('18','19') then
+          byte2 := read_bytes(stream, 1); -- read byte2
+          readCount := readCount + 1;
+        else
+          byte2 := null;
+        end if;
+        ptg := ptgList(utl_raw.cast_to_binary_integer(utl_raw.concat(byte1,byte2)));
+        
+        -- if that ptg requires an extra
+        if ptg.name in ('PtgArray','PtgMemArea','PtgExp') then
+          extras.extend;
+          extras(extras.last) := ptg.name;
+        end if;
+        
+        if ptg.hasType then
+          -- select bits 5 and 6, and shift right 5
+          ptgType := raw2int(utl_raw.bit_and(byte1, '60'))/32;
+        else
+          ptgType := null;
+        end if;
+        
+        debug(utl_lms.format_message('[%s]%s', ptg.name
+                                               , case ptgType 
+                                                 when 1 then '[REFERENCE]'
+                                                 when 2 then '[VALUE]'
+                                                 when 3 then '[ARRAY]'
+                                                 end
+                                                   ));
+        
+        if ptg.sz is not null then
+          skip(stream, ptg.sz - readCount);
+        else
+          
+          if ptg.name = 'PtgStr' then
+            intValue := read_int16(stream);  -- cch
+            skip(stream, intValue*2); -- rgch
+            ptg.sz := 3 + intValue*2;
+          elsif ptg.name = 'PtgAttrChoose' then
+            intValue := read_int16(stream); -- cOffset
+            skip(stream, (intValue+1)*2); -- rgOffset
+            ptg.sz := 4 + (intValue+1)*2;
+          end if;
+        
+        end if;
+        
+        rgceOffset := rgceOffset + ptg.sz;
+      
+      end loop;
+      
+      debug('END Rgce');
+      
+      debug('BEGIN RgbExtra ['||to_char(stream.offset,'FM0XXXXXXX')||']');
+      cb := read_int32(stream); -- cb
+      debug('cb='||cb);
+      
+      if cb != 0 then
+        
+        for i in 1 .. extras.count loop
+           
+          case extras(i)
+          when 'PtgMemArea' then
+            -- read PtgExtraMem
+            debug('[PtgExtraMem]');
+            cnt := read_int32(stream); -- count
+            for j in 1 .. cnt loop
+              rfx.rwFirst := read_int32(stream);
+              rfx.rwLast := read_int32(stream);
+              rfx.colFirst := read_int32(stream);
+              rfx.colLast := read_int32(stream);
+              debug(
+                '  '||
+                base26encode(rfx.colFirst) ||
+                to_char(rfx.rwFirst+1) || ':' ||
+                base26encode(rfx.colLast) ||
+                to_char(rfx.rwLast+1)
+              );
+            end loop;
+            
+          when 'PtgExp' then
+            --read PtgExtraCol
+            debug('[PtgExtraCol]');
+            debug('  '||base26encode(read_int32(stream)));
+          
+          end case;
+        
+        end loop;
+        --skip(stream, cb); -- rgcb
+        
+      end if;
+      
+      debug('END RgbExtra');
+      
+      debug('END ParsedFormula');
+        
+    end loop;
+    close_stream(stream);
+  end;*/
 
 begin
   
