@@ -41,6 +41,9 @@ create or replace package body xutl_xlsb is
   BRT_ENDSTYLESHEET     constant pls_integer := 279;
   BRT_BEGINLIST         constant pls_integer := 343;
   BRT_BEGINLISTCOL      constant pls_integer := 347;
+  BRT_BEGINEXTERNALS    constant pls_integer := 353;
+  BRT_ENDEXTERNALS      constant pls_integer := 354;
+  BRT_SUPSELF           constant pls_integer := 357;
   BRT_BEGINCOLINFOS     constant pls_integer := 390;
   BRT_ENDCOLINFOS       constant pls_integer := 391;
   BRT_EXTERNSHEET       constant pls_integer := 362;
@@ -102,6 +105,8 @@ create or replace package body xutl_xlsb is
   , content      blob
   );
   
+  type recordArray_t is table of record_t;
+  
   type String_T is record (
     is_lob    boolean := false
   , strValue  varchar2(32767)
@@ -151,6 +156,8 @@ create or replace package body xutl_xlsb is
   
   type dateXfMap_t is table of ExcelTypes.CT_NumFmt index by pls_integer;
   
+  type sheetMap_t is table of pls_integer index by varchar2(128);
+  
   type Context_T is record (
     stream      Stream_T
   , sst         SST_T
@@ -165,6 +172,8 @@ create or replace package body xutl_xlsb is
   
   type Context_cache_T is table of Context_T index by pls_integer;
   ctx_cache  Context_cache_T;
+  
+  sheetMap  sheetMap_t;
   
   debug_mode       boolean := false;
   MAX_STRING_SIZE  pls_integer;
@@ -1006,67 +1015,19 @@ create or replace package body xutl_xlsb is
   end;
   
   function make_ExternSheet (
-    links  in SupportingLinks_T
+    xtiArray  in ExcelTypes.xtiArray_t
   )
   return Record_T
   is
     rec  Record_T := new_record(BRT_EXTERNSHEET);
   begin
-    write_record(rec, int2raw(links.count));  -- cXti
-    for i in links.first .. links.last loop
+    write_record(rec, int2raw(xtiArray.count));  -- cXti
+    for i in 1 .. xtiArray.count loop
       -- Xti : 
-      write_record(rec, int2raw(links(i).externalLink));  -- externalLink
-      write_record(rec, int2raw(links(i).firstSheet));    -- firstSheet
-      write_record(rec, int2raw(links(i).lastSheet));     -- lastSheet
+      write_record(rec, int2raw(xtiArray(i).externalLink));  -- externalLink
+      write_record(rec, int2raw(xtiArray(i).firstSheet - 1)); -- firstSheet
+      write_record(rec, int2raw(xtiArray(i).lastSheet - 1));  -- lastSheet
     end loop;
-    return rec;
-  end;
-  
-  function make_FilterDatabase (
-    bundleShIndex  in pls_integer
-  , xti            in pls_integer
-  , firstRow       in pls_integer
-  , firstCol       in pls_integer
-  , lastRow        in pls_integer
-  , lastCol        in pls_integer
-  )
-  return Record_T
-  is
-    rec  Record_T := new_record(BRT_NAME);
-  begin
-    write_record(rec, 
-      bitVector( 1  -- fHidden
-               , 0  -- fFunc
-               , 0  -- fOB
-               , 0  -- fProc
-               , 0  -- fCalcExp
-               , 1  -- fBuiltin
-               )
-    );
-    write_record(rec, '000000'); -- fgrp, fPublished, fWorkbookParam, fFutureFunction, reserved : all bits set to 0
-    
-    write_record(rec, '00'); -- chKey
-    write_record(rec, int2raw(bundleShIndex)); -- itab
-    write_XLWideString(rec, '_FilterDatabase'); -- name
-    -- <BrtName.formula 
-    write_record(rec, '0F000000'); -- cce
-     
-    write_record(rec, '3B');            -- PtgArea3d
-    write_record(rec, int2raw(xti,2));  -- ixti
-    -- <RgceAreaRel
-    write_record(rec, int2raw(firstRow));    -- rowFirst
-    write_record(rec, int2raw(lastRow));     -- rowLast
-    write_record(rec, int2raw(firstcol,2));  -- columnFirst
-    write_record(rec, int2raw(lastCol,2));   -- columnLast
-    -- RgceAreaRel>
-    
-    write_record(rec, '00000000'); -- NameParsedFormula.cb
-    -- BrtName.formula>
-    
-    write_record(rec, 'FFFFFFFF'); -- BrtName.comment : NULL
-    
-    -- no unusedstring1, description, helpTopic and unusedstring2 since fProc = 0
-  
     return rec;
   end;
   
@@ -1402,20 +1363,83 @@ create or replace package body xutl_xlsb is
     return rec;
   end;
   
-  function add_SupportingLink (
-    links         in out nocopy SupportingLinks_T
-  , externalLink  in pls_integer
-  , firstSheet    in pls_integer
-  , lastSheet     in pls_integer default null
+  -- 2.4.711 BrtName
+  function make_Name (
+    names  in out nocopy ExcelTypes.CT_DefinedNames
+  , idx    in pls_integer
   )
-  return pls_integer
+  return record_t
   is
-    idx  pls_integer := nvl(links.last, -1) + 1;
+    nm   ExcelTypes.CT_DefinedName := names(idx);
+    rec  record_t := new_record(BRT_NAME);
+    newNames  ExcelTypes.CT_DefinedNames;
   begin
-    links(idx).externalLink := externalLink;
-    links(idx).firstSheet := firstSheet;
-    links(idx).lastSheet := nvl(lastSheet, firstSheet);
-    return idx;
+    write_record(rec
+               , bitVector(
+                   case when nm.hidden then 1 else 0 end  -- fHidden
+                 , case when nm.futureFunction then 1 else 0 end  -- fFunc (implied if fFutureFunction=1)
+                 , 0  -- fOB
+                 , case when nm.futureFunction then 1 else 0 end  -- fProc (implied if fFutureFunction=1)
+                 , 0  -- fCalcExp
+                 , case when nm.builtIn then 1 else 0 end  -- fBuiltin
+                 , 0  -- fgrp[0]
+                 , 0  -- fgrp[1]
+                 ));
+    write_record(rec
+               , bitVector(
+                   0  -- fgrp[2]
+                 , 0  -- fgrp[3]
+                 , 0  -- fgrp[4]
+                 , 0  -- fgrp[5]
+                 , 0  -- fgrp[6]
+                 , 0  -- fgrp[7]
+                 , 0  -- fgrp[8]
+                 , 0  -- fPublished
+                 ));
+    write_record(rec
+               , bitVector(
+                   0  -- fWorkbookParam
+                 , case when nm.futureFunction then 1 else 0 end  -- fFutureFunction
+                 , 0  -- reserved[0]
+                 , 0  -- reserved[1]
+                 , 0  -- reserved[2]
+                 , 0  -- reserved[3]
+                 , 0  -- reserved[4]
+                 , 0  -- reserved[5]
+                 ));
+    write_record(rec, '00'); -- reserved[6 to 13]
+    write_record(rec, '00'); -- chKey
+    -- itab
+    if nm.scope is not null then
+      write_record(rec, int2raw(sheetMap(upper(nm.scope))));
+    else
+      write_record(rec, 'FFFFFFFF');
+    end if;
+    write_XLWideString(rec, nm.name); -- name
+    write_record(rec, ExcelFmla.parseBinary(nm.formula, ExcelFmla.EXC_FMLATYPE_NAME, nm.cellRef));
+    -- comment
+    if nm.comment is not null then
+      write_XLWideString(rec, nm.comment);
+    else
+      write_record(rec, 'FFFFFFFF'); -- NULL
+    end if;
+    -- if fProc = 1 (which is implied by fFutureFunction)
+    if nm.futureFunction then
+      write_record(rec, 'FFFFFFFF'); -- unusedstring1
+      write_record(rec, 'FFFFFFFF'); -- description
+      write_record(rec, 'FFFFFFFF'); -- helpTopic
+      write_record(rec, 'FFFFFFFF'); -- unusedstring2
+    end if;
+    
+    -- retrieving generated names from formula context and append to existing collection
+    newNames := ExcelFmla.getNames;
+    for i in 1 .. newNames.count loop
+      names.extend;
+      names(names.last) := newNames(i);
+    end loop;
+    
+    return rec;
+
   end;
   
   procedure put_RowHdr (
@@ -1529,7 +1553,9 @@ create or replace package body xutl_xlsb is
   , sheetName  in varchar2
   )
   is
+    sheetIdx  pls_integer := sheetMap.count; -- 0-based sheet index
   begin
+    sheetMap(upper(sheetName)) := sheetIdx;
     put_record(stream, make_BundleSh(sheetId, relId, sheetName));
   end;
   
@@ -1607,37 +1633,6 @@ create or replace package body xutl_xlsb is
   is
   begin
     put_record(stream, make_BuiltInStyle(builtInId, styleName, xfId));
-  end;
-  
-  procedure put_ExternSheet (
-    stream  in out nocopy stream_t
-  , links   in SupportingLinks_T
-  )
-  is
-  begin
-    put_record(stream, make_ExternSheet(links));
-  end;
-
-  procedure put_FilterDatabase (
-    stream         in out nocopy stream_t
-  , bundleShIndex  in pls_integer
-  , xti            in pls_integer
-  , firstRow       in pls_integer
-  , firstCol       in pls_integer
-  , lastRow        in pls_integer
-  , lastCol        in pls_integer
-  )
-  is
-  begin
-    put_record(stream
-             , make_FilterDatabase (
-                 bundleShIndex
-               , xti
-               , firstRow
-               , firstCol
-               , lastRow
-               , lastCol
-               ));
   end;
   
   procedure put_CalcProp (
@@ -1793,6 +1788,48 @@ create or replace package body xutl_xlsb is
   is
   begin
     put_record(stream, make_WsFmtInfo(defaultRowHeight));
+  end;
+
+  procedure put_Names (
+    stream  in out nocopy stream_t
+  , names   in out nocopy ExcelTypes.CT_DefinedNames
+  )
+  is
+    externals  ExcelTypes.CT_Externals;
+    recArray   recordArray_t := recordArray_t();
+    idx        pls_integer;
+    supLink    pls_integer;
+  begin
+    -- Generate BrtName records
+    idx := names.first;
+    while idx is not null loop
+      recArray.extend;
+      recArray(idx) := make_Name(names, idx); --TODO: make_Name(names[in out], idx)? 
+      idx := names.next(idx);
+    end loop;
+    
+    externals := ExcelFmla.getExternals;
+    if externals.xtiArray.count != 0 then
+      put_simple_record(stream, BRT_BEGINEXTERNALS);
+      
+      -- supporting links
+      supLink := externals.supLinks.first;
+      while supLink is not null loop
+        put_simple_record(stream, supLink);
+        supLink := externals.supLinks.next(supLink);
+      end loop;
+      
+      -- 2.4.665 BrtExternSheet
+      put_record(stream, make_ExternSheet(externals.xtiArray));
+      
+      put_simple_record(stream, BRT_ENDEXTERNALS);
+    end if;
+    
+    -- Put BrtName records
+    for i in 1 .. recArray.count loop
+      put_record(stream, recArray(i));
+    end loop;
+    
   end;
 
   -- convert a 0-based column number to base26 string
@@ -2467,6 +2504,11 @@ create or replace package body xutl_xlsb is
     return dateXfMap;
   end;
   
+  procedure resetSheetCache is
+  begin
+    sheetMap.delete;
+  end;
+  
   function new_context (
     p_sst_part  in blob
   , p_cols      in varchar2 default null
@@ -2546,13 +2588,14 @@ create or replace package body xutl_xlsb is
     ctx_cache.delete(p_ctx_id);
   end;
 
-  /*procedure read_formulas (file in blob) is
+  procedure read_formulas (file in blob) is
     stream      Stream_T;
     recordName  varchar2(128);
     intValue    pls_integer;
     
     byte1       raw(1);
     byte2       raw(1);
+    raw1        raw(1);
     readCount   pls_integer;
     cce         pls_integer;
     cb          pls_integer;
@@ -2588,7 +2631,7 @@ create or replace package body xutl_xlsb is
 
     while stream.offset < stream.sz loop
       next_record(stream);   
-      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA);
+      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA,BRT_NAME);
       
       debug('---------------------------');
       debug(recordTypeLabelMap(stream.rt));
@@ -2598,6 +2641,25 @@ create or replace package body xutl_xlsb is
 
         skip(stream, 16); -- rfx
         skip(stream, 1); -- A + unused
+        
+      elsif stream.rt = BRT_NAME then
+        
+        raw1 := read_bytes(stream, 1);
+        debug('fHidden='||case when is_bit_set(raw1,0) then 1 else 0 end);
+        debug('fFunc='||case when is_bit_set(raw1,1) then 1 else 0 end);
+        debug('fOB='||case when is_bit_set(raw1,2) then 1 else 0 end);
+        debug('fProc='||case when is_bit_set(raw1,3) then 1 else 0 end);
+        debug('fCalcExp='||case when is_bit_set(raw1,4) then 1 else 0 end);
+        debug('fBuiltin='||case when is_bit_set(raw1,5) then 1 else 0 end);
+        raw1 := read_bytes(stream, 1);
+        debug('fPublished='||case when is_bit_set(raw1,7) then 1 else 0 end);
+        raw1 := read_bytes(stream, 1);
+        debug('fWorkbookParam='||case when is_bit_set(raw1,0) then 1 else 0 end);
+        debug('fFutureFunction='||case when is_bit_set(raw1,1) then 1 else 0 end);
+        skip(stream, 1); -- ...reserved
+        skip(stream, 1); -- chKey
+        debug('itab='||read_int32(stream)); -- itab
+        debug('name='||read_XLString(stream).strValue); -- name
         
       else
       
@@ -2625,7 +2687,7 @@ create or replace package body xutl_xlsb is
       cce := read_int32(stream); -- cce
       debug('cce='||cce);
       
-      debug('BEGIN Rgce ['||to_char(stream.offset,'FM0XXXXXXX')||']');
+      debug('BEGIN Rgce ['||to_char(stream.offset-1,'FM0XXXXXXX')||']');
       
       rgceOffset := 0;
       
@@ -2684,7 +2746,7 @@ create or replace package body xutl_xlsb is
       
       debug('END Rgce');
       
-      debug('BEGIN RgbExtra ['||to_char(stream.offset,'FM0XXXXXXX')||']');
+      debug('BEGIN RgbExtra ['||to_char(stream.offset-1,'FM0XXXXXXX')||']');
       cb := read_int32(stream); -- cb
       debug('cb='||cb);
       
@@ -2729,7 +2791,7 @@ create or replace package body xutl_xlsb is
         
     end loop;
     close_stream(stream);
-  end;*/
+  end;
 
 begin
   

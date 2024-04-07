@@ -72,14 +72,7 @@ create or replace package xutl_xlsb is
   procedure flush_stream (stream  in out nocopy Stream_T);
    
   procedure set_debug (p_mode in boolean);
-  
-  function add_SupportingLink (
-    links         in out nocopy SupportingLinks_T
-  , externalLink  in pls_integer
-  , firstSheet    in pls_integer
-  , lastSheet     in pls_integer default null
-  )
-  return pls_integer;
+  procedure resetSheetCache;
   
   procedure put_simple_record (
     stream   in out nocopy stream_t
@@ -127,11 +120,6 @@ create or replace package xutl_xlsb is
     stream       in out nocopy stream_t
   , str          in varchar2
   , strRunArray  in StrRunArray_T default null
-  );
-  
-  procedure put_ExternSheet (
-    stream  in out nocopy stream_t
-  , links   in SupportingLinks_T
   );
   
   procedure put_defaultBookViews (
@@ -190,16 +178,6 @@ create or replace package xutl_xlsb is
   , builtInId  in pls_integer
   , styleName  in varchar2
   , xfId       in pls_integer
-  );
-
-  procedure put_FilterDatabase (
-    stream         in out nocopy stream_t
-  , bundleShIndex  in pls_integer
-  , xti            in pls_integer
-  , firstRow       in pls_integer
-  , firstCol       in pls_integer
-  , lastRow        in pls_integer
-  , lastCol        in pls_integer
   );
   
   procedure put_CalcProp (
@@ -282,6 +260,11 @@ create or replace package xutl_xlsb is
     stream            in out nocopy stream_t
   , defaultRowHeight  in number
   );
+
+  procedure put_Names (
+    stream  in out nocopy stream_t
+  , names   in out nocopy ExcelTypes.CT_DefinedNames
+  );
     
   function new_context (
     p_sst_part  in blob
@@ -312,6 +295,9 @@ create or replace package xutl_xlsb is
   , p_nrows   in pls_integer
   )
   return ExcelTableCellList;
+  
+  procedure read_all (file in blob);
+  procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /
