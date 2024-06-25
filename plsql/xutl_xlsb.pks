@@ -45,6 +45,7 @@ create or replace package xutl_xlsb is
                                      and rich text support
     Marc Bleron       2023-05-03     Added date style detection
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
+    Marc Bleron       2024-05-01     Added sheet state, formula support
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -72,14 +73,7 @@ create or replace package xutl_xlsb is
   procedure flush_stream (stream  in out nocopy Stream_T);
    
   procedure set_debug (p_mode in boolean);
-  
-  function add_SupportingLink (
-    links         in out nocopy SupportingLinks_T
-  , externalLink  in pls_integer
-  , firstSheet    in pls_integer
-  , lastSheet     in pls_integer default null
-  )
-  return pls_integer;
+  procedure resetSheetCache;
   
   procedure put_simple_record (
     stream   in out nocopy stream_t
@@ -129,13 +123,9 @@ create or replace package xutl_xlsb is
   , strRunArray  in StrRunArray_T default null
   );
   
-  procedure put_ExternSheet (
-    stream  in out nocopy stream_t
-  , links   in SupportingLinks_T
-  );
-  
   procedure put_defaultBookViews (
-    stream  in out nocopy stream_t
+    stream      in out nocopy stream_t
+  , firstSheet  in pls_integer
   );
   
   procedure put_BundleSh (
@@ -143,6 +133,11 @@ create or replace package xutl_xlsb is
   , sheetId    in pls_integer
   , relId      in varchar2
   , sheetName  in varchar2
+  , state      in pls_integer
+  );
+
+  procedure put_BeginSheet (
+    stream  in out nocopy stream_t
   );
   
   procedure put_BeginList (
@@ -191,20 +186,11 @@ create or replace package xutl_xlsb is
   , styleName  in varchar2
   , xfId       in pls_integer
   );
-
-  procedure put_FilterDatabase (
-    stream         in out nocopy stream_t
-  , bundleShIndex  in pls_integer
-  , xti            in pls_integer
-  , firstRow       in pls_integer
-  , firstCol       in pls_integer
-  , lastRow        in pls_integer
-  , lastCol        in pls_integer
-  );
   
   procedure put_CalcProp (
-    stream  in out nocopy stream_t
-  , calcId  in pls_integer
+    stream    in out nocopy stream_t
+  , calcId    in pls_integer
+  , refStyle  in pls_integer
   );
 
   procedure put_WsProp (
@@ -282,6 +268,31 @@ create or replace package xutl_xlsb is
     stream            in out nocopy stream_t
   , defaultRowHeight  in number
   );
+
+  procedure put_Names (
+    stream  in out nocopy stream_t
+  , names   in out nocopy ExcelTypes.CT_DefinedNames
+  );
+
+  procedure put_CellFmla (
+    stream    in out nocopy stream_t
+  , colIndex  in pls_integer
+  , styleRef  in pls_integer default 0
+  , expr      in varchar2
+  , shared    in boolean default null
+  , si        in pls_integer default null
+  , cellRef   in varchar2 default null
+  , refStyle  in pls_integer default null
+  );
+
+  procedure put_ShrFmlaRfX (
+    stream    in out nocopy stream_t
+  , si        in pls_integer
+  , firstRow  in pls_integer
+  , firstCol  in pls_integer
+  , lastRow   in pls_integer
+  , lastCol   in pls_integer  
+  );
     
   function new_context (
     p_sst_part  in blob
@@ -312,6 +323,9 @@ create or replace package xutl_xlsb is
   , p_nrows   in pls_integer
   )
   return ExcelTableCellList;
+  
+  --procedure read_all (file in blob);
+  --procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /

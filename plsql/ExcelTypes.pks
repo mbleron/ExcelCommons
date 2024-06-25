@@ -33,6 +33,7 @@ create or replace package ExcelTypes is
                                      and rich text support
     Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
                                      Added font strikethrough, text orientation, indent
+    Marc Bleron       2024-03-13     Added definedName structure
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -129,6 +130,47 @@ create or replace package ExcelTypes is
   type CT_RichText is record (
     runs     CT_TextRunList
   , content  varchar2(32767)
+  );
+
+  type CT_SheetBase is record (
+    idx   pls_integer  
+  , name  varchar2(31 char)
+  );
+  
+  type CT_Sheets is table of CT_SheetBase;
+  
+  type CT_DefinedName is record (
+    idx             pls_integer
+  , name            varchar2(255 char)
+  , scope           varchar2(128)
+  , formula         varchar2(32767)
+  , cellRef         varchar2(10)
+  , refStyle        pls_integer
+  , comment         varchar2(255 char)
+  , hidden          boolean
+  , futureFunction  boolean
+  , builtIn         boolean
+  );
+  
+  type CT_DefinedNames is table of CT_DefinedName;
+  type CT_DefinedNameMap is table of CT_DefinedName index by varchar2(2048);
+  
+  type supportingLinks_t is table of pls_integer index by pls_integer;
+  
+  type xti_t is record (
+    idx           pls_integer
+  , externalLink  pls_integer
+  , firstSheet    pls_integer
+  , lastSheet     pls_integer
+  );
+  
+  type xtiMap_t is table of xti_t index by varchar2(24);
+  type xtiArray_t is table of xti_t;
+  
+  type CT_Externals is record (
+    supLinks  supportingLinks_t
+  , xtiArray  xtiArray_t
+  , xtiMap    xtiMap_t
   );
   
   type colorMap_t is table of varchar2(6) index by varchar2(20);
@@ -243,6 +285,11 @@ create or replace package ExcelTypes is
   
   function fromOADate (p_value in number, p_scale in pls_integer default 0) return timestamp_unconstrained;
   function getBuiltInDateFmts return CT_NumFmtMap;
+  
+  function isSheetQuotableStartChar (p_char in varchar2) return boolean;
+  function isSheetQuotableChar (p_char in varchar2) return boolean;
+  function isNameStartChar (p_char in varchar2) return boolean;
+  function isNameChar (p_char in varchar2) return boolean;
   
   procedure setDebug (p_status in boolean);
 
