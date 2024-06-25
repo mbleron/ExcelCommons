@@ -1,5 +1,24 @@
 create or replace package body ExcelFmla is
+/* ======================================================================================
 
+  This Source Code Form is subject to the terms of the Mozilla Public 
+  License, v. 2.0. If a copy of the MPL was not distributed with this 
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+  Copyright (c) 2023-2024 Marc Bleron
+  
+  This file incorporates work ported to PL/SQL from the LibreOffice project:
+  * procedure transformOperand adapted from XclExpFmlaCompImpl::RecalcTokenClass 
+    [https://github.com/LibreOffice/core/blob/master/sc/source/filter/excel/xeformula.cxx]
+  * procedure transformOperands adapted from XclExpFmlaCompImpl::RecalcTokenClasses 
+    [https://github.com/LibreOffice/core/blob/master/sc/source/filter/excel/xeformula.cxx]
+
+=========================================================================================
+    Change history :
+    Marc Bleron       2023-10-01     Creation
+====================================================================================== */
+
+  PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
   PTG_ADD       constant pls_integer := 3;   -- 0x03 PtgAdd - Addition (+)
   PTG_SUB       constant pls_integer := 4;   -- 0x04 PtgSub - Subtraction (-)
   PTG_MUL       constant pls_integer := 5;   -- 0x05 PtgMul - Multiplication (*)
@@ -41,6 +60,8 @@ create or replace package body ExcelFmla is
   PTG_MEMAREA_R   constant pls_integer := 38;  -- 0x26 PtgMemArea
   PTG_MEMERR_R    constant pls_integer := 39;  -- 0x27 PtgMemErr
   PTG_MEMFUNC_R   constant pls_integer := 41;  -- 0x29 PtgMemFunc
+  PTG_REFN_R      constant pls_integer := 44;  -- 0x2C PtgRefN
+  PTG_AREAN_R     constant pls_integer := 45;  -- 0x2D PtgAreaN
   PTG_NAMEX_R     constant pls_integer := 57;  -- 0x39 PtgNameX
   PTG_REF3D_R     constant pls_integer := 58;  -- 0x3A PtgRef3d
   PTG_AREA3D_R    constant pls_integer := 59;  -- 0x3B PtgArea3d
@@ -55,9 +76,12 @@ create or replace package body ExcelFmla is
   PTG_MEMAREA_V   constant pls_integer := 70;  -- 0x46 PtgMemArea
   PTG_MEMERR_V    constant pls_integer := 71;  -- 0x47 PtgMemErr
   PTG_MEMFUNC_V   constant pls_integer := 73;  -- 0x49 PtgMemFunc
+  PTG_REFN_V      constant pls_integer := 76;  -- 0x4C PtgRefN
+  PTG_AREAN_V     constant pls_integer := 77;  -- 0x4D PtgAreaN
   PTG_NAMEX_V     constant pls_integer := 89;  -- 0x59 PtgNameX
   PTG_REF3D_V     constant pls_integer := 90;  -- 0x5A PtgRef3d
   PTG_AREA3D_V    constant pls_integer := 91;  -- 0x5B PtgArea3d
+  
   -- Array-type Ptg's
   PTG_ARRAY_A     constant pls_integer := 96;  -- 0x60 PtgArray
   PTG_FUNC_A      constant pls_integer := 97;  -- 0x61 PtgFunc
@@ -68,6 +92,8 @@ create or replace package body ExcelFmla is
   PTG_MEMAREA_A   constant pls_integer := 102;  -- 0x66 PtgMemArea
   PTG_MEMERR_A    constant pls_integer := 103;  -- 0x67 PtgMemErr
   PTG_MEMFUNC_A   constant pls_integer := 105;  -- 0x69 PtgMemFunc
+  PTG_REFN_A      constant pls_integer := 108;  -- 0x6C PtgRefN
+  PTG_AREAN_A     constant pls_integer := 109;  -- 0x6D PtgAreaN
   PTG_NAMEX_A     constant pls_integer := 121;  -- 0x79 PtgNameX
   PTG_REF3D_A     constant pls_integer := 122;  -- 0x7A PtgRef3d
   PTG_AREA3D_A    constant pls_integer := 123;  -- 0x7B PtgArea3d
@@ -114,45 +140,39 @@ create or replace package body ExcelFmla is
   tokenOpPtgMap  intList_t := intList_t(
   PTG_ADD, PTG_SUB, PTG_MUL, PTG_DIV, PTG_POWER, PTG_CONCAT, PTG_LT, PTG_LE, PTG_EQ, PTG_GE, PTG_GT, PTG_NE, PTG_UNION, PTG_RANGE, PTG_PERCENT);
 
-  T_LEFT        constant binary_integer := 30; -- (
-  T_RIGHT       constant binary_integer := 31; -- )
-  T_COMMA       constant binary_integer := 32; -- ,
-  
-  T_SEMICOLON   constant binary_integer := 35; -- ;
-  T_BANG        constant binary_integer := 36; -- ! 0x24
-
-  T_NUMBER      constant binary_integer := 40;
-  
-  T_FUNC_START  constant binary_integer := 42;
-  T_STRING      constant binary_integer := 45;
-  
+  T_LEFT            constant binary_integer := 30; -- (
+  T_RIGHT           constant binary_integer := 31; -- )
+  T_COMMA           constant binary_integer := 32; -- ,
+  T_SEMICOLON       constant binary_integer := 35; -- ;
+  T_BANG            constant binary_integer := 36; -- ! 0x24
+  T_NUMBER          constant binary_integer := 40;
+  T_FUNC_START      constant binary_integer := 42;
+  T_STRING          constant binary_integer := 45;
   T_ARRAY_START     constant binary_integer := 47;
   T_ARRAYROW_START  constant binary_integer := 48;
   T_OPERAND         constant binary_integer := 49;
   T_ARG_SEP         constant binary_integer := 50;
   T_MISSING_ARG     constant binary_integer := 51;
-  
-  T_ARRAYITEM_SEP  constant binary_integer := 52;
-  T_ARRAYROW_STOP  constant binary_integer := 53;
-  T_WSPACE         constant binary_integer := 54;
-  T_ARRAY_STOP     constant binary_integer := 55;
-  T_FUNC_STOP      constant binary_integer := 56;
-  T_PREFIX         constant binary_integer := 57;
-  T_ERROR          constant binary_integer := 58;
-  T_QUOTED         constant binary_integer := 59; -- 0x3B
-  T_BOOLEAN        constant binary_integer := 60;
-  
-  T_BASE_REF     constant binary_integer := 64; -- 0x40
-  T_ROW_REF      constant binary_integer := T_BASE_REF + RT_ROW; -- 0x41
-  T_COL_REF      constant binary_integer := T_BASE_REF + RT_COLUMN; -- 0x42
-  T_CELL_REF     constant binary_integer := T_BASE_REF + RT_CELL; -- 0x43
-  T_NAME         constant binary_integer := T_BASE_REF + RT_NAMED_RANGE; -- 0x44
-  T_SHEET        constant binary_integer := 80; -- 0x50
+  T_ARRAYITEM_SEP   constant binary_integer := 52;
+  T_ARRAYROW_STOP   constant binary_integer := 53;
+  T_WSPACE          constant binary_integer := 54;
+  T_ARRAY_STOP      constant binary_integer := 55;
+  T_FUNC_STOP       constant binary_integer := 56;
+  T_PREFIX          constant binary_integer := 57;
+  T_ERROR           constant binary_integer := 58;
+  T_QUOTED          constant binary_integer := 59; -- 0x3B
+  T_BOOLEAN         constant binary_integer := 60;
+  T_BASE_REF        constant binary_integer := 64; -- 0x40
+  T_ROW_REF         constant binary_integer := T_BASE_REF + RT_ROW; -- 0x41
+  T_COL_REF         constant binary_integer := T_BASE_REF + RT_COLUMN; -- 0x42
+  T_CELL_REF        constant binary_integer := T_BASE_REF + RT_CELL; -- 0x43
+  T_NAME            constant binary_integer := T_BASE_REF + RT_NAMED_RANGE; -- 0x44
+  T_SHEET           constant binary_integer := 80; -- 0x50
   
   type tokenTypeList_t is table of pls_integer;
   function tokenTypeSequence (tokenTypes in tokenTypeList_t) return varchar2;
   
-  -- sequences of tokens that parse as a single ptg:
+  -- sequences of tokens matching a single ptg:
   QUOTED_MULTISHEET_ROW_RANGE   constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_PREFIX, T_BANG, T_ROW_REF, OP_RANGE, T_ROW_REF));
   QUOTED_MULTISHEET_COL_RANGE   constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_PREFIX, T_BANG, T_COL_REF, OP_RANGE, T_COL_REF));
   QUOTED_MULTISHEET_CELL_RANGE  constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_PREFIX, T_BANG, T_CELL_REF, OP_RANGE, T_CELL_REF));
@@ -174,9 +194,7 @@ create or replace package body ExcelFmla is
   ROW_RANGE                     constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_ROW_REF, OP_RANGE, T_ROW_REF));
   COL_RANGE                     constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_COL_REF, OP_RANGE, T_COL_REF));
   CELL_RANGE                    constant varchar2(2048) := tokenTypeSequence(tokenTypeList_t(T_CELL_REF, OP_RANGE, T_CELL_REF));
-    
-  --LETTERS         constant varchar2(26) := 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  --DIGITS          constant varchar2(10) := '0123456789';
+  
   MAX_COL_NUMBER  constant pls_integer := 16384;
   MAX_ROW_NUMBER  constant pls_integer := 1048576;
   
@@ -190,37 +208,64 @@ create or replace package body ExcelFmla is
   
   /** Effective token class conversion types. */
   --enum XclExpClassConv
-  EXC_CLASSCONV_ORG constant pls_integer := 0;          -- Keep original class of the token.
-  EXC_CLASSCONV_VAL constant pls_integer := 1;          -- Convert ARR tokens to VAL class (REF remains unchanged).
-  EXC_CLASSCONV_ARR constant pls_integer := 2;          -- Convert VAL tokens to ARR class (REF remains unchanged).
+  CLASSCONV_ORG constant pls_integer := 0;  -- Keep original class of the token.
+  CLASSCONV_VAL constant pls_integer := 1;  -- Convert ARR tokens to VAL class (REF remains unchanged).
+  CLASSCONV_ARR constant pls_integer := 2;  -- Convert VAL tokens to ARR class (REF remains unchanged).
   
   /** Enumerates different types of token class conversion in function parameters. */
   --enum XclFuncParamConv
-  EXC_PARAMCONV_ORG constant pls_integer := 0;          -- Use original class of current token.
-  EXC_PARAMCONV_VAL constant pls_integer := 1;          -- Convert tokens to VAL class.
-  EXC_PARAMCONV_ARR constant pls_integer := 2;          -- Convert tokens to ARR class.
-  EXC_PARAMCONV_RPT constant pls_integer := 3;          -- Repeat parent conversion in VALTYPE parameters.
-  EXC_PARAMCONV_RPX constant pls_integer := 4;          -- Repeat parent conversion in REFTYPE parameters.
-  EXC_PARAMCONV_RPO constant pls_integer := 5;          -- Repeat parent conversion in operands of operators.
+  PARAMCONV_ORG constant pls_integer := 0;  -- Use original class of current token.
+  PARAMCONV_VAL constant pls_integer := 1;  -- Convert tokens to VAL class.
+  PARAMCONV_ARR constant pls_integer := 2;  -- Convert tokens to ARR class.
+  PARAMCONV_RPT constant pls_integer := 3;  -- Repeat parent conversion in VALTYPE parameters.
+  PARAMCONV_RPX constant pls_integer := 4;  -- Repeat parent conversion in REFTYPE parameters.
+  PARAMCONV_RPO constant pls_integer := 5;  -- Repeat parent conversion in operands of operators.
 
   /** Type of a formula. */
   --enum XclFormulaType
-  --EXC_FMLATYPE_CELL     constant pls_integer := 0;   -- Simple cell formula, also used in change tracking.
-  EXC_FMLATYPE_MATRIX   constant pls_integer := 1;   -- Matrix (array) formula.
-  EXC_FMLATYPE_SHARED   constant pls_integer := 2;   -- Shared formula.
-  EXC_FMLATYPE_CONDFMT  constant pls_integer := 3;   -- Conditional format.
-  EXC_FMLATYPE_DATAVAL  constant pls_integer := 4;   -- Data validation.
-  --EXC_FMLATYPE_NAME     constant pls_integer := 5;   -- Defined name.
-  EXC_FMLATYPE_CHART    constant pls_integer := 6;   -- Chart source ranges.
-  --EXC_FMLATYPE_CONTROL  constant pls_integer := 7;   -- Spreadsheet links in form controls.
-  --EXC_FMLATYPE_WQUERY   constant pls_integer := 8;   -- Web query source range.
-  EXC_FMLATYPE_LISTVAL  constant pls_integer := 9;   -- List (cell range) validation.
+  FMLATYPE_MATRIX   constant pls_integer := 1;
+  FMLATYPE_CONDFMT  constant pls_integer := 3;
+  FMLATYPE_DATAVAL  constant pls_integer := 4;
+  --FMLATYPE_CHART    constant pls_integer := 6;
+  --FMLATYPE_LISTVAL  constant pls_integer := 9;
 
   /** Type of token class handling. */
   --enum XclExpFmlaClassType
-  EXC_CLASSTYPE_CELL    constant pls_integer := 0;   -- Cell formula, shared formula.
-  EXC_CLASSTYPE_ARRAY   constant pls_integer := 1;   -- Array formula, conditional formatting, data validation.
-  EXC_CLASSTYPE_NAME    constant pls_integer := 2;   -- Defined name, range list.
+  CLASSTYPE_CELL    constant pls_integer := 0;  -- Cell formula, shared formula.
+  CLASSTYPE_ARRAY   constant pls_integer := 1;  -- Array formula, conditional formatting, data validation.
+  CLASSTYPE_NAME    constant pls_integer := 2;  -- Defined name, range list.
+  
+  ERR_UNEXPECTED_TOKEN  constant varchar2(256) := 'Unexpected token: %s';
+  ERR_UNDEFINED_NAME    constant varchar2(256) := 'Undefined name: %s';
+  ERR_PAREN_MISMATCHED  constant varchar2(256) := 'Parentheses mismatched';
+  ERR_UNSCOPED_REF      constant varchar2(256) := 'Unscoped cell reference';
+
+  FUNCTIONS             constant varchar2(32767) :=
+'H4sIAAAAAAACA2VXWY8kRxGus6t7Zm2v1/b6vu9rvDtrjG87qyqrK3eqMmsys3q6FwkLA4sMvriNxM0rBj/4F3AI+AXwAhI2xwv3LXEIsLlfkXhBGiKyOrLai1r98EVG
+RkZGRnwRFbPcXBaEYRRmQZCwQpm3E0oR1f/YXLSHa7T1xAtPn312B0WoZmta2B4X6oyVpebG/DaIUmciZrK8KQgPozBB85ozs+f2Rbhmil+NZxkhnxwdAVT/fVy0TB4b
+FwHtvi2IohHW/6TVCVvwki/OC9eHZoA1m/OUvJiuBewpUpmtJaJ6LYxi+GXg3ZYXmtfD+BCkEVif5qy2li/t8+H6vGnOLSuFseeH8XDnDCVCLo6SYJYLqVrUuTBMkkGn
+4KIRcn5duL5FUvCm+ViAcBqFAGumn6M7ZUUtcPsx0p6AAE64iDAqWG7srhOkTkEpw98RRIdhNIHrpEXDmfyCj2ihSv4RH7NCNX0rZ0EwvEw2YNPSU4FCC5e4mM7bLpQs
+mOUS/p0LIwi3QFiJksuCXxLGMVnWmjenyK8YEuzohhOm/iuheCPZZkNOgSTZTLUtL67TQvXSBvSoEwfZ1whvOZw3TO69JQz9rUAmqjPozPCaa4n5UxgdDiKwu2D6XvJ3
+Vmhh3fMdpyvFhSnO9dMUCfz/z08QJSWEiAXrvRmiUlRPkLEZChas6flnKQ7Tcp15d+CuKIrhyJKtCp8MAMyp+078LogGG1GZ/ydIhlSblO5Kt/mt2SBg398wVuYvkX5W
+8rnm3BxQOqdQO2b/USqNpJxz+y+/NylbtrxrEwp5p4eTUjUN0+dhFg836bQq+8J+c0PFWDjh7g3/nKB7dcOo6dvbNyC8xz0epgi773i8xbVWeseuOp7SHRK+4PJSfyO+
+ZIX9INFFzJfdJRTLGQAlsbQuoxdJKtD+hueaijWG3xhAlANEqHr5qCpk+VF6hhRR/kOCuLi4wtdBJUzN9ZXk1GzAoHKV97MSS16eH4RkrlFKX00VN62U5gUz9k1oMsow
+NyvN93sot9V/4XJxGOImZIH7KHujavFAQCQ0Z23riOoaIqGpE4EP15KbmZM08gJyKptz1QJxPEYJcQTyoRMLZSFx2VksmziO8YJzrQ5sfW8QJnECu6ewFygM9z7uqbiG
+K+313TuDOImSKTAdhKlWvZ7796jhHTUQ4967QkeFE+AakKEX6Pr15HokqhAiPXBbJiqXBX90he3YDp6CL68OogTswilTwALiZ19GhgszIFghK/Xv4dwwiIW0l3snAHBd
+8M6+mQKZiK61XwmSyZBCQutHA8+9wjie+ZTPGWHAnY/7enVQ6Xi0bxo1FwVrvueZUBjJog0FqSR2mW95UgBR3+Zcf3LjFPDprRQQgJpXT7lV5EMIFuz/hCfX08L82p+2
+12ub06ukULJzzl3sElxteGXfTzWcIsp/QjBuuLzO2wGQ/9w3EXg2SL6TmAGxS4Cokce9A3DlZ0ajan7yxKXjTjWHnafGnSiBvLyR8nIbsFTa5cANvqaGbLoqcL05dGYP
+uH7eR6hltqgfx+U4S5D5gLwy6hAJAPZun5ptyeHR2y+6zdhAW+BpJl8j9bgV5bVE4wmA/GeEYElORrNCsveQ2Qmg3vLaPyNgIHfDvwSS2GVWC8n0iKOzwee2b+yXXT1j
+u2xVeSsxVwKAn3amU9SEFKlLshzKz1CzjiTbWhPWEcnnfvi4iQJ3VHJ7oPQeNpIdSPbmEAoF3j6LouD40LrO1ZhS9G/2EwxK4Da3+laGAoM6t/jZyIlA6TaSxFLZW4IR
+HJx2nkI9Sij8B4msYtkttgPsyRnGXpXlHWRhoqrKcCtBNXTPHil9M0U/6zjTRsn7qXC3Oqxk6PENr32Gb6+FGqpWuIkP7g6WQdz29k4q7KgTF63jGEOpPUTOZZ0SBg65
+i26edph3+36U60D7q0QWCfTA/JEQGC9OU7d76Ilf96MLCODk91FUom5xPx013e+ZRufn3vlMM0xMs/DdDq5RPkZhxDv9Zkj5aFi0/OEgHnzJNO8aVvAPB9QB1oL8xyRJ
+QGKv8bO1FvPafoDqduJg/lNfx1q1TD4ZjrCX5ZW0eeZgqQ7kL0mUOVHf/cJ3Y+gaUxo7EwCm8Z8H2uw/4OdZAw9b1Jq6azbg/EckiA0/dyoDSQL/c6cyFIG5Avu+ZzIj
+5vIKn5eQshdsLMn6LyPa4wcFlXdsGvk5ooEUWL3jD5HHqYFG2lQjrZp9bS8mO9sGPlpKpktxht/u88iNQkd8YjjIng3fgLtv+2QfMHvaMzlw/mr5oM990+fGCgsE9AJ2
+XPfgILPKsmbpJl780Ilh3Er8JxoAUa3Gz6CJE5g/j59AYLZd5/DrAZERyMw+I0fglHa52652T5Avg6Rb7Z4kSYYSULnHfxqYVfl5SsPQftrnAUTqQh9//Nb7m2d4i3Rz
+t5/HsOWd8HRpRctzep0ZIjdovzjaAmZqqGpTq4Dtfr+uoxmSg+ngE8o4pp6gguay3N0YcBKrRfshz+2IcN7ZG9/c6p7fQMMjAFl819eOxVHtYaTTgRgSnGEXzhp8iKV9
+B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCig0Eg8r5pdqgTHFl3ije0EsidY0O9ba4mKyhb7p/vDIagxGRz
+4fofJXT+TZoQAAA=';
+  
+  subtype nodeHandle is pls_integer;
+  type nodeHandleList_t is table of nodeHandle;
   
   type operandInfo_t is record (
     convClass  pls_integer -- operand conversion class
@@ -268,18 +313,14 @@ create or replace package body ExcelFmla is
   type arrayRow_t is table of arrayItem_t;
   type array_t is table of arrayRow_t;
 
-  type pos_t is record (
-    ln       pls_integer -- line number
-  , cn       pls_integer -- column number
-  --, last_cn  pls_integer -- last column number of previous line
-  );
+  type pos_t is record (ln pls_integer, cn pls_integer);
   
   type parseNode_t is record (
-    id         pls_integer
+    id         nodeHandle
   , nodeType   pls_integer
   , attrType   pls_integer
-  , children   intList_t
-  , parentId   pls_integer
+  , children   nodeHandleList_t
+  , parentId   nodeHandle
   , token      varchar2(32767)
   , pos        pos_t
   , nodeClass  pls_integer
@@ -287,7 +328,6 @@ create or replace package body ExcelFmla is
   );
   
   type parseNodeList_t is table of parseNode_t;
-  --type parseNodeMap_t is table of parseNode_t index by pls_integer;
   
   type ptgBool_t is record (value binary_integer);
   type ptgNum_t is record (value binary_double);
@@ -344,12 +384,10 @@ create or replace package body ExcelFmla is
   );
   
   type opMetadataMap_t is table of opMetadata_t index by pls_integer;
-  
-  --type quotableCharMap_t is table of pls_integer index by varchar2(1 char);
 
   type config_t is record (
-    fmlaType       pls_integer  -- EXC_FMLATYPE_*
-  , fmlaClassType  pls_integer  -- EXC_CLASSTYPE_*
+    fmlaType       pls_integer  -- FMLATYPE_*
+  , fmlaClassType  pls_integer  -- CLASSTYPE_*
   );
   
   type byteArray_t is record (content raw(32767), lobContent blob);
@@ -365,6 +403,7 @@ create or replace package body ExcelFmla is
   type context_t is record (
     sheet      sheet_t
   , cell       cell_t
+  , refStyle   pls_integer
   , sheetMap   sheetMap_t
   , nameMap    nameMap_t
   , externals  ExcelTypes.CT_Externals
@@ -374,16 +413,15 @@ create or replace package body ExcelFmla is
   , rgce       stream_t
   , rgbExtra   stream_t
   -- Defined names generated by this formula, e.g. when a future function is used (_xlfn.XXX)
-  -- This collection is meant to be sent back to the calling context for merging, and deleted
+  -- This collection is meant to be sent back to the calling context for merging, then deleted
   , definedNames  ExcelTypes.CT_DefinedNames
-  , treeRootId  pls_integer
+  , treeRootId  nodeHandle
   );
   
   ctx  context_t; 
   
   opMetadataMap   opMetadataMap_t;
   errorMap        errorMap_t;
-  --quotableCharMap  quotableCharMap_t;
   
   formulaString   varchar2(32767);
   formulaLength   pls_integer;
@@ -405,9 +443,40 @@ create or replace package body ExcelFmla is
   ptgMemErrList   ptgMemErrList_t;
   ptgMemAreaList  ptgMemAreaList_t;
   
-  --streams         streamStack_t;
-  --parentStream    stream_t;
   currentStream   stream_t;
+  
+  debug_enabled   boolean := false;
+  
+  procedure setDebug (enabled in boolean default true)
+  is
+  begin
+    debug_enabled := enabled;
+  end;
+  
+  procedure debug (message in varchar2)
+  is
+  begin
+    if debug_enabled then
+      dbms_output.put_line(message);
+    end if;
+  end;
+
+  procedure error (
+    p_message in varchar2
+  , p_arg1 in varchar2 default null
+  , p_arg2 in varchar2 default null
+  , p_arg3 in varchar2 default null
+  , p_arg4 in varchar2 default null
+  , p_pos  in pos_t default null
+  )
+  is
+  begin
+    raise_application_error(
+      -20000
+    , case when p_pos.ln is not null then utl_lms.format_message('[line %d, col %d] ', p_pos.ln, p_pos.cn) end ||
+      utl_lms.format_message(p_message, p_arg1, p_arg2, p_arg3, p_arg4)
+    );
+  end;
 
   procedure putChars (stream in out nocopy stream_t, chars in varchar2) is
     len  pls_integer := length(chars);
@@ -530,12 +599,12 @@ create or replace package body ExcelFmla is
     info  operandInfo_t;
   begin
     info.convClass := case substr(operandInfoStr, 2, 1)
-                      when 'O' then EXC_PARAMCONV_ORG
-                      when 'A' then EXC_PARAMCONV_ARR
-                      when 'R' then EXC_PARAMCONV_RPT
-                      when 'X' then EXC_PARAMCONV_RPX
-                      when 'V' then EXC_PARAMCONV_VAL
-                      when 'P' then EXC_PARAMCONV_RPO
+                      when 'O' then PARAMCONV_ORG
+                      when 'A' then PARAMCONV_ARR
+                      when 'R' then PARAMCONV_RPT
+                      when 'X' then PARAMCONV_RPX
+                      when 'V' then PARAMCONV_VAL
+                      when 'P' then PARAMCONV_RPO
                       end;
     info.valueType := ( substr(operandInfoStr, 1, 1) = 'V' );
     return info;
@@ -586,48 +655,59 @@ create or replace package body ExcelFmla is
 
   procedure initFuncMetadataMap
   is
-    strings  stringList_t;
-    meta     functionMetadata_t;
+    content    raw(32767) := utl_compress.lz_uncompress(utl_encode.base64_decode(utl_raw.cast_to_raw(FUNCTIONS)));
+    contentSz  pls_integer := utl_raw.length(content);
+    arraySz    pls_integer;
+    meta       functionMetadata_t;
+    pos        pls_integer := 1;
     
-    cursor c_meta is
-    select funcname
-         , xclfunc
-         , minparamcount
-         , maxparamcount
-         , retclass
-         , paraminfos
-         , case when flags like '%VOLATILE%' then 1 else 0 end as volatile
-         , xclfuncname
-    from xclfunctioninfo
-    order by funcname;
+    typeList   stringList_t := stringList_t('RA','RO','RR','RX','VA','VO','VR','VV','VX');
+    
+    function readBytes (len in pls_integer) return raw is
+      bytes  raw(256) := utl_raw.substr(content, pos, len);
+    begin
+      pos := pos + len;
+      return bytes;
+    end;
+    
+    function readInt (sz in pls_integer) return pls_integer is
+    begin
+      return utl_raw.cast_to_binary_integer(readBytes(sz), utl_raw.little_endian);
+    end;
+    
+    function readString return varchar2 is
+      sz  pls_integer := readInt(1);
+    begin
+      return case when sz != 0 then utl_i18n.raw_to_char(readBytes(sz), 'AL32UTF8') end;
+    end;
     
   begin
     
-    for r in c_meta loop
+    while pos <= contentSz loop
 
-      meta.id := r.xclfunc;
-      meta.name := r.funcname;
-      meta.minParamCount := r.minparamcount;
-      meta.maxParamCount := r.maxparamcount;
-      meta.returnClass := case r.retclass 
-                          when 'R' then VT_REFERENCE
-                          when 'V' then VT_VALUE
-                          when 'A' then VT_ARRAY
-                          end;
-      meta.volatile := ( r.volatile = 1 );
-      meta.internalName := r.xclfuncname;
+      meta.name := readString();
+      meta.id := readInt(2);
+      meta.minParamCount := readInt(1);
+      meta.maxParamCount := readInt(1);
+      meta.returnClass := readInt(1);
       
-      strings := parseStringList(r.paraminfos, '|');
       meta.paramInfos := operandInfoList_t();
-      for i in 1 .. strings.count loop
-        meta.paramInfos.extend;
-        meta.paramInfos(i) := makeOperandInfo(strings(i));
-      end loop;
+      arraySz := readInt(1);
+      if arraySz != 0 then
+        meta.paramInfos.extend(arraySz);
+        for i in 1 .. arraySz loop
+          meta.paramInfos(i) := makeOperandInfo(typeList(readInt(1)));
+        end loop;
+      end if;
       
+      meta.volatile := ( readInt(1) = 1 );
+      meta.internalName := nvl(readString(), meta.name);
+      
+      debug(utl_lms.format_message('id=%d,name=%s,internalName=%s', meta.id, meta.name, meta.internalName));
       functionMetadataMap(meta.name) := meta;
     
     end loop;
-       
+     
   end;
 
   procedure initErrorMap is
@@ -743,6 +823,12 @@ create or replace package body ExcelFmla is
     ptgLabels(PTG_MEMFUNC_R)    := 'PtgMemFunc';
     ptgLabels(PTG_MEMFUNC_V)    := 'PtgMemFunc';
     ptgLabels(PTG_MEMFUNC_A)    := 'PtgMemFunc';
+    ptgLabels(PTG_REFN_R)       := 'PtgRefN';
+    ptgLabels(PTG_REFN_V)       := 'PtgRefN';
+    ptgLabels(PTG_REFN_A)       := 'PtgRefN';
+    ptgLabels(PTG_AREAN_R)      := 'PtgAreaN';
+    ptgLabels(PTG_AREAN_V)      := 'PtgAreaN';
+    ptgLabels(PTG_AREAN_A)      := 'PtgAreaN';
     ptgLabels(PTG_NAMEX_R)      := 'PtgNameX';
     ptgLabels(PTG_NAMEX_V)      := 'PtgNameX';
     ptgLabels(PTG_NAMEX_A)      := 'PtgNameX';
@@ -836,44 +922,43 @@ create or replace package body ExcelFmla is
   
   procedure append (token in out nocopy token_t, str in varchar2) is
   begin
-    if token.value is null then
+    if token.value is null and token.pos.ln is null then
       -- save start position of this token
       token.pos := pos;
     end if;
     token.value := token.value || str;
+  exception
+    when value_error then
+      error('Token is too long', p_pos => token.pos);
   end;
   
-  function parseCellReference (input in varchar2) return cell_t;
+  function parseCellReference (input in varchar2, refStyle in pls_integer default REF_A1) return cell_t;
   
   procedure parseToken (token in out nocopy token_t, tokenType in pls_integer) is 
-  begin
-    --if token.value is not null then
-      
-      if tokenType = T_OPERAND then
+  begin  
+    if tokenType = T_OPERAND then
         
-        -- boolean?
-        if token.value in ('TRUE', 'FALSE') then
-          token.type := T_BOOLEAN;
-        else
-          -- try to parse a cell reference or name out of it
-          token.parsedValue.cell := parseCellReference(token.value);
-          if not token.parsedValue.cell.isNull then
-            token.type := T_BASE_REF + token.parsedValue.cell.type;
-          else
-            token.parsedValue.ident.value := token.value;
-            token.parsedValue.ident.matchSheetName := ctx.sheetMap.exists(upper(token.value));
-            --TODO: check if the value matches a sheet name and/or a defined name
-            --token.parsedValue.ident.matchDefinedName := nameMap.exists(token.value);
-            token.type := T_NAME;
-          end if;
-        
-        end if;
-      
+      -- boolean?
+      if token.value in ('TRUE', 'FALSE') then
+        token.type := T_BOOLEAN;
       else
-        token.type := tokenType;
+        -- try to parse a cell reference or name out of it
+        token.parsedValue.cell := parseCellReference(token.value, ctx.refStyle);
+        if not token.parsedValue.cell.isNull then
+          token.type := T_BASE_REF + token.parsedValue.cell.type;
+        else
+          token.parsedValue.ident.value := token.value;
+          token.parsedValue.ident.matchSheetName := ctx.sheetMap.exists(upper(token.value));
+          --TODO: check if the value matches a sheet name and/or a defined name
+          --token.parsedValue.ident.matchDefinedName := nameMap.exists(token.value);
+          token.type := T_NAME;
+        end if;
+        
       end if;
       
-    --end if;
+    else
+      token.type := tokenType;
+    end if;  
   end;
   
   procedure pushAndClear (stream in out nocopy tokenStream_t, token in out nocopy token_t, tokenType in pls_integer) is
@@ -948,7 +1033,7 @@ create or replace package body ExcelFmla is
     end loop;
     return output;
   end;
-
+  
   function getTokenTypeSequence (stream in tokenStream_t, cnt in pls_integer) return varchar2 is
     offset     pls_integer := 0;
     maxOffset  pls_integer := least(cnt, stream.tokens.count - stream.idx + 1);
@@ -965,18 +1050,6 @@ create or replace package body ExcelFmla is
       offset := offset + 1;
     end loop;
     return output;
-  end;
-
-  procedure error (
-    p_message in varchar2
-  , p_arg1 in varchar2 default null
-  , p_arg2 in varchar2 default null
-  , p_arg3 in varchar2 default null
-  , p_arg4 in varchar2 default null
-  )
-  is
-  begin
-    raise_application_error(-20000, utl_lms.format_message(p_message, p_arg1, p_arg2, p_arg3, p_arg4));
   end;
 
   function getNLS (parameterName in varchar2) 
@@ -1001,21 +1074,14 @@ create or replace package body ExcelFmla is
     initFuncMetadataMap;
     initLabels;
     initErrorMap;
-    --initQuotableCharMap;
   end;
   
-  procedure addChildNode (id in pls_integer, childId in pls_integer) is
+  procedure addChildNode (id in nodeHandle, childId in nodeHandle) is
   begin
     t(id).children.extend;
     t(id).children(t(id).children.last) := childId;
   end;
-  
-  -- check whether character code point is greater than 0x7F (upper bound of ASCII range)
-  function isUnicodeChar(c in varchar2) return boolean is
-  begin
-    return ( nlssort(c,'NLS_SORT=UNICODE_BINARY') > hextoraw('007F') );
-  end;
-  
+    
   function isWhitespace(c in varchar2) return boolean is
   begin
     return ( c = ' ' or c = chr(10) or c = chr(13) or c = chr(9) );
@@ -1075,10 +1141,9 @@ create or replace package body ExcelFmla is
     sheet.name := name;
     sheet.quotable := false;
     -- check if sheet name contains a quotable character or matches a reserved sequence
-    if isValidCellReference(upper(sheet.name)) then
-      -- name matches an A1-reference
+    if isValidCellReference(upper(sheet.name), REF_A1) or isValidCellReference(upper(sheet.name), REF_R1C1) then
+      -- name matches an A1 or R1C1-reference
       sheet.quotable := true;
-      --TODO: R1C1 reference
     else
       -- search for a quotable character
       if ExcelTypes.isSheetQuotableStartChar(substr(sheet.name, 1, 1)) then
@@ -1100,7 +1165,11 @@ create or replace package body ExcelFmla is
 
   procedure setCurrentSheet (sheetName in varchar2) is
   begin
-    ctx.sheet := ctx.sheetMap(upper(sheetName));
+    if sheetName is not null then
+      ctx.sheet := ctx.sheetMap(upper(sheetName));
+    else
+      ctx.sheet := null;
+    end if;
   end;
 
   procedure setCurrentCell (cellRef in varchar2) is
@@ -1156,17 +1225,7 @@ create or replace package body ExcelFmla is
   begin
     return to_binary_double(replace(str, '.', decimalSep));
   end;
-   
-  -- sheet-name-character
-  /*
-  function isSheetNameChar (c in varchar2) return boolean is
-  begin
-    return c not in (':', ',', ' ', '^', '*', '/', '+', '-', '&', '=', '<', '>', '%', -- operators
-                     '''', '[', ']', '\', '?', 
-                     '(', ')', ';', '{', '}', '#', '"', '!');
-  end;  
-  */
-  
+    
   function eof return boolean is
   begin
     return ( pointer > formulaLength );
@@ -1267,11 +1326,11 @@ create or replace package body ExcelFmla is
     return makeSheetPrefix(area3d.prefix) || makeArea(area3d.area);
   end;
 
-  function makeName (name in name_t) return varchar2
+  function makeName (name in name_t, includeScope in boolean default true) return varchar2
   is
     prefix  varchar2(256);
   begin
-    if name.scope.idx is not null then
+    if includeScope and name.scope.idx is not null then
       prefix := name.scope.name;
       if name.scope.quotable then
         prefix := '''' || prefix || '''';
@@ -1343,6 +1402,29 @@ create or replace package body ExcelFmla is
       a.lastCell.rw := tmp.rw;
     end if;    
   end;
+  
+  procedure adjustColumn (col in out nocopy column_t)
+  is
+  begin
+    if col.value < 0 then
+      col.value := col.value + MAX_COL_NUMBER;
+    elsif col.value >= MAX_COL_NUMBER then
+      col.value := col.value - MAX_COL_NUMBER;
+    end if;
+    col.value := col.value + 1;
+    col.alphaValue := base26Encode(col.value);    
+  end;
+
+  procedure adjustRow (rw in out nocopy row_t)
+  is
+  begin
+    if rw.value < 0 then
+      rw.value := rw.value + MAX_ROW_NUMBER;
+    elsif rw.value >= MAX_ROW_NUMBER then
+      rw.value := rw.value - MAX_ROW_NUMBER;
+    end if;
+    rw.value := rw.value + 1;
+  end;
 
   procedure applyCellOffset (
     cell    in out nocopy cell_t
@@ -1352,21 +1434,11 @@ create or replace package body ExcelFmla is
   begin
     if not cell.col.isAbsolute then
       cell.col.value := cell.col.value - origin.col.value;
-      if cell.col.value < 0 then
-        cell.col.value := cell.col.value + MAX_COL_NUMBER;
-      elsif cell.col.value >= MAX_COL_NUMBER then
-        cell.col.value := cell.col.value - MAX_COL_NUMBER;
-      end if;
-      cell.col.alphaValue := base26Encode(cell.col.value + 1); 
+      adjustColumn(cell.col);
     end if;
     if not cell.rw.isAbsolute then
       cell.rw.value := cell.rw.value - origin.rw.value;
-      if cell.rw.value < 0 then
-        cell.rw.value := cell.rw.value + MAX_ROW_NUMBER;
-      elsif cell.rw.value >= MAX_ROW_NUMBER then
-        cell.rw.value := cell.rw.value - MAX_ROW_NUMBER;
-      end if;
-      cell.rw.value := cell.rw.value + 1;
+      adjustRow(cell.rw);
     end if;
   end;
   
@@ -1375,35 +1447,34 @@ create or replace package body ExcelFmla is
   , token     in varchar2 default null
   , pos       in pos_t default null
   ) 
-  return pls_integer 
+  return nodeHandle 
   is
     node  parseNode_t;
   begin
     t.extend;
     node.id := t.last;
     node.nodeType := ptgType;
-    node.children := intList_t();
+    node.children := nodeHandleList_t();
     node.token := token;
     node.pos := pos;
-    --node.nodeClass := nullif(bitand(ptgType,96)/32, 0);
     node.nodeClass := bitand(ptgType,96)/32;
     t(node.id) := node;
     return node.id;
   end;
 
-  function createPtgErr (errValue in varchar2, pos in pos_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_ERR, errValue, pos);
+  function createPtgErr (errValue in varchar2, pos in pos_t) return nodeHandle is
+    nodeId  nodeHandle := createPtg(PTG_ERR, errValue, pos);
   begin
     if errorMap.exists(errValue) then
       ptgErrList(nodeId).value := errorMap(errValue);
     else
-      error('Invalid error value: %s', errValue);
+      error('Invalid error value: %s', errValue, p_pos => pos);
     end if;
     return nodeId;
   end;
 
-  function createPtgBool (boolValue in varchar2, pos in pos_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_BOOL, boolValue, pos);
+  function createPtgBool (boolValue in varchar2, pos in pos_t) return nodeHandle is
+    nodeId  nodeHandle := createPtg(PTG_BOOL, boolValue, pos);
   begin
     case boolValue 
     when 'TRUE' then
@@ -1411,62 +1482,98 @@ create or replace package body ExcelFmla is
     when 'FALSE' then
       ptgBoolList(nodeId).value := 0;
     else
-      error('Invalid boolean value: %s', boolValue);
+      error('Invalid boolean value: %s', boolValue, p_pos => pos);
     end case;
     return nodeId;
   end;
 
-  function createPtgName (nameValue in name_t, pos in pos_t) return pls_integer is
+  function createPtgName (nameValue in name_t, pos in pos_t) return nodeHandle is
     localName  name_t := nameValue;
-    nodeId     pls_integer;
+    nodeId     nodeHandle;
     nameKey    varchar2(2048) := upper(ctx.sheet.name || '!' || localName.value);
+    ptgType    pls_integer := PTG_NAME_R;
   begin
-    -- check if this name matches a defined name in the scope of the context sheet
-    if ctx.nameMap.exists(nameKey) then
-      localName := ctx.nameMap(nameKey);
-    -- else should match a workbook-level name
-    elsif ctx.nameMap.exists(upper(localName.value)) then
+    -- match a workbook-level name
+    if ctx.nameMap.exists(upper(localName.value)) then
       localName := ctx.nameMap(upper(localName.value));
+    
+    -- match a defined name in the scope of the context sheet
+    elsif ctx.nameMap.exists(nameKey) then
+      localName := ctx.nameMap(nameKey);
+      -- for a NameParsedFormula, force conversion to PtgNameX
+      if ctx.config.fmlaType = FMLATYPE_NAME then
+        ptgType := PTG_NAMEX_R;
+      end if;
+      
     else
-      error('Undefined name: %s', localName.value);
+      error(ERR_UNDEFINED_NAME, localName.value, p_pos => pos);
     end if;
-    nodeId := createPtg(PTG_NAME_R, makeName(localName), pos);
+    
+    nodeId := createPtg(ptgType, makeName(localName, (ptgType = PTG_NAMEX_R)), pos);
     ptgNameList(nodeId).value := localName;
     return nodeId;
   end;
 
-  function createPtgNameX (nameValue in name_t, pos in pos_t) return pls_integer is
-    nodeId     pls_integer;
+  function createPtgNameX (nameValue in name_t, pos in pos_t) return nodeHandle is
+    localName  name_t;
+    nodeId     nodeHandle;
     nameKey    varchar2(2048) := upper(nameValue.scope.name || '!' || nameValue.value);
-    nameToken  varchar2(2048) := makeName(nameValue);
   begin
-    if not ctx.nameMap.exists(nameKey) then
-      error('Undefined name: %s', nameToken);
+    if ctx.nameMap.exists(nameKey) then
+      localName := ctx.nameMap(nameKey);
+    else
+      error(ERR_UNDEFINED_NAME, makeName(nameValue), p_pos => pos);
     end if;
-    nodeId := createPtg(PTG_NAMEX_R, nameToken, pos);
-    ptgNameList(nodeId).value := ctx.nameMap(nameKey);
+    nodeId := createPtg(PTG_NAMEX_R, makeName(localName), pos);
+    ptgNameList(nodeId).value := localName;
     return nodeId;
   end;
 
-  function createPtgRef (refValue in area3d_t, pos in pos_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_REF_R, makeRef(refValue.area.firstCell), pos);
+  function createPtgRef (refValue in area3d_t, pos in pos_t) return nodeHandle is
+    nodeId    nodeHandle;
+    ptgType   pls_integer;
+    localRef  area3d_t := refValue;
   begin
-    ptgArea3dList(nodeId).value := refValue;
+    if ctx.binary
+       and ctx.config.fmlaType = FMLATYPE_SHARED
+       and not(localRef.area.firstCell.col.isAbsolute and localRef.area.firstCell.rw.isAbsolute)
+    then
+      ptgType := PTG_REFN_R;
+      applyCellOffset(localRef.area.firstCell, ctx.cell);
+    else
+      ptgType := PTG_REF_R;
+    end if;
+    nodeId := createPtg(ptgType, makeRef(localRef.area.firstCell), pos);
+    ptgArea3dList(nodeId).value := localRef;
     return nodeId;
   end;
 
-  function createPtgArea (areaValue in area3d_t, pos in pos_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_AREA_R, makeArea(areaValue.area), pos);
+  function createPtgArea (areaValue in area3d_t, pos in pos_t) return nodeHandle is
+    nodeId     nodeHandle;
+    ptgType    pls_integer;
+    localArea  area3d_t := areaValue;
   begin
-    ptgArea3dList(nodeId).value := areaValue;
+    if ctx.binary
+       and ctx.config.fmlaType = FMLATYPE_SHARED
+       and not(localArea.area.firstCell.col.isAbsolute and localArea.area.firstCell.rw.isAbsolute
+               and localArea.area.lastCell.col.isAbsolute and localArea.area.lastCell.rw.isAbsolute)
+    then
+      ptgType := PTG_AREAN_R;
+      applyCellOffset(localArea.area.firstCell, ctx.cell);
+      applyCellOffset(localArea.area.lastCell, ctx.cell);
+    else
+      ptgType := PTG_AREA_R;
+    end if;
+    nodeId := createPtg(ptgType, makeArea(localArea.area), pos);
+    ptgArea3dList(nodeId).value := localArea;
     return nodeId;
   end;
 
-  function createPtgRef3d (ref3dValue in area3d_t, pos in pos_t) return pls_integer is
-    nodeId      pls_integer;
+  function createPtgRef3d (ref3dValue in area3d_t, pos in pos_t) return nodeHandle is
+    nodeId      nodeHandle;
     localRef3d  area3d_t := ref3dValue;
   begin
-    if ctx.config.fmlaType = EXC_FMLATYPE_NAME then
+    if ctx.config.fmlaType = FMLATYPE_NAME then
       applyCellOffset(localRef3d.area.firstCell, ctx.cell);
     end if;
     nodeId := createPtg(PTG_REF3D_R, makeRef3d(localRef3d), pos);
@@ -1474,11 +1581,11 @@ create or replace package body ExcelFmla is
     return nodeId;
   end;
   
-  function createPtgArea3d (area3dValue in area3d_t, pos in pos_t) return pls_integer is
-    nodeId       pls_integer;
+  function createPtgArea3d (area3dValue in area3d_t, pos in pos_t) return nodeHandle is
+    nodeId       nodeHandle;
     localArea3d  area3d_t := area3dValue;
   begin
-    if ctx.config.fmlaType = EXC_FMLATYPE_NAME then
+    if ctx.config.fmlaType = FMLATYPE_NAME then
       applyCellOffset(localArea3d.area.firstCell, ctx.cell);
       applyCellOffset(localArea3d.area.lastCell, ctx.cell);
     end if;
@@ -1487,19 +1594,19 @@ create or replace package body ExcelFmla is
     return nodeId;
   end;
 
-  function createPtgStr (strValue in varchar2, pos in pos_t) return pls_integer is
-    nodeId  pls_integer;
+  function createPtgStr (strValue in varchar2, pos in pos_t) return nodeHandle is
+    nodeId  nodeHandle;
   begin
     if length(strValue) > 255 then
-      error('String literals in formulas can''t be bigger than 255 characters');
+      error('String literal is too long', p_pos => pos);
     end if;
     nodeId := createPtg(PTG_STR, '"'||replace(strValue, '"', '""')||'"', pos);
     ptgStrList(nodeId).value := strValue;
     return nodeId;
   end;
     
-  function createNumericPtg (strValue in varchar2, pos in pos_t) return pls_integer is
-    nodeId    pls_integer;
+  function createNumericPtg (strValue in varchar2, pos in pos_t) return nodeHandle is
+    nodeId    nodeHandle;
     numValue  number := toLocalNumber(strValue);
   begin
     if trunc(numValue) = numValue then
@@ -1512,15 +1619,15 @@ create or replace package body ExcelFmla is
     return nodeId;
   end;
 
-  function createPtgArray (arrayValue in array_t, pos in pos_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_ARRAY_A, makeArray(arrayValue), pos);
+  function createPtgArray (arrayValue in array_t, pos in pos_t) return nodeHandle is
+    nodeId  nodeHandle := createPtg(PTG_ARRAY_A, makeArray(arrayValue), pos);
   begin
     ptgArrayList(nodeId).value := arrayValue;
     return nodeId;
   end;
 
-  function createPtgFuncVar (funcName in varchar2, pos in pos_t) return pls_integer is
-    nodeId    pls_integer;
+  function createPtgFuncVar (funcName in varchar2, pos in pos_t) return nodeHandle is
+    nodeId    nodeHandle;
     nodeType  pls_integer;
     meta      functionMetadata_t;
   begin
@@ -1541,20 +1648,20 @@ create or replace package body ExcelFmla is
   end;
 
   function createPtgParen return parseNode_t is
-    nodeId  pls_integer := createPtg(PTG_PAREN, '()');
+    nodeId  nodeHandle := createPtg(PTG_PAREN, '()');
   begin
     return t(nodeId);
   end;
 
-  function createPtgMemErr (errValue in varchar2) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_MEMERR_R);
+  function createPtgMemErr (errValue in varchar2) return nodeHandle is
+    nodeId  nodeHandle := createPtg(PTG_MEMERR_R);
   begin
     ptgMemErrList(nodeId).value := errorMap(errValue);
     return nodeId;
   end;
 
-  function createPtgMemArea (areaListValue in areaList_t) return pls_integer is
-    nodeId  pls_integer := createPtg(PTG_MEMAREA_R);
+  function createPtgMemArea (areaListValue in areaList_t) return nodeHandle is
+    nodeId  nodeHandle := createPtg(PTG_MEMAREA_R);
   begin
     ptgMemAreaList(nodeId).value := areaListValue;
     return nodeId;
@@ -1578,7 +1685,7 @@ create or replace package body ExcelFmla is
     procedure expect (tokenType in pls_integer) is
     begin
       if not accept(tokenType) then
-        error('Unexpected token: %s', token.value);
+        error(ERR_UNEXPECTED_TOKEN, token.value);
       end if;
     end;
 
@@ -1609,13 +1716,13 @@ create or replace package body ExcelFmla is
           item.itemType := 0;
           item.numValue := toLocalNumber(token.value) * -1;
         else
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, token.value);
         end if;
       when T_NUMBER then
         item.itemType := 0;
         item.numValue := toLocalNumber(token.value);
       else
-        error('Unexpected token: %s', token.value);
+        error(ERR_UNEXPECTED_TOKEN, token.value);
       end case;
       return item;
     end;
@@ -1634,7 +1741,7 @@ create or replace package body ExcelFmla is
           token := getNextToken(stream);
           continue;
         else
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, token.value);
         end if;
       end loop;
       return rw;
@@ -1655,7 +1762,7 @@ create or replace package body ExcelFmla is
       token := getNextToken(stream);
       exit when token.type = T_ARRAY_STOP;
       if token.type != T_ARRAYROW_START then
-        error('Unexpected token: %s', token.value);
+        error(ERR_UNEXPECTED_TOKEN, token.value);
       end if;
     end loop;
     
@@ -1727,7 +1834,7 @@ create or replace package body ExcelFmla is
   
   function isRef (ptg in parseNode_t, matchFunctionEnd in pls_integer) return boolean is
   begin
-    return ptg.nodeType in (PTG_AREA_R, PTG_AREA3D_R, PTG_REF_R, PTG_REF3D_R, PTG_NAME_R, PTG_NAMEX_R)
+    return ptg.nodeType in (PTG_AREA_R, PTG_AREAN_R, PTG_AREA3D_R, PTG_REF_R, PTG_REFN_R, PTG_REF3D_R, PTG_NAME_R, PTG_NAMEX_R)
         -- convoluted stuff to test whether the node matches a ref function start or stop, depending on the calling context
         or (
              (
@@ -1783,92 +1890,211 @@ create or replace package body ExcelFmla is
     return prefix;
   end;
 
-  function parseCellReference (input in varchar2) return cell_t is
+  function parseCellReference (input in varchar2, refStyle in pls_integer default REF_A1) return cell_t is
     cell  cell_t;
 
     absolute  boolean := false;
     str       varchar2(32767);
     i         pls_integer := 0;
     c         varchar2(1 char);
+    neg       boolean := false;
+    
     procedure get is 
     begin
       i := i + 1;
       c := substr(input, i, 1);
+    end;
+    
+    procedure readDigits is
+    begin
+      str := c;
+      get;
+      while isDigit(c) loop
+        str := str || c;
+        get;
+      end loop;      
     end;
 
   begin
     
     get;
     
-    if c = '$' then
-      absolute := true;
-      get;
-    end if;
+    if refStyle = REF_A1 then
+      -- A1-style cell reference
     
-    if isLetter(c) then
-      str := str || c;
-      get;
-      while isLetter(c) loop
-        str := str || c;
-        get;
-      end loop;
-      
-      if length(str) > 3 then
-        return NULL_CELL;
-      end if;
-      
-      cell.col.value := base26Decode(str);
-      if cell.col.value between 1 and MAX_COL_NUMBER then
-        cell.col.isAbsolute := absolute;
-        cell.col.alphaValue := str;
-        cell.type := RT_COLUMN;
-        cell.isNull := false;
-      else
-        return NULL_CELL;
-      end if;
-      
-      if c is null then  
-        return cell;
-      end if;
-      
-      absolute := false;
-      str := null;
-      
       if c = '$' then
         absolute := true;
         get;
       end if;
       
-    end if;
-        
-    if isDigit(c) and c != '0' then
-      str := str || c;
-      get;
-      while isDigit(c) loop
+      if isLetter(c) then
         str := str || c;
         get;
-      end loop;
-      -- extra characters found after sequence of digits
-      if c is not null then
-        return NULL_CELL;
+        while isLetter(c) loop
+          str := str || c;
+          get;
+        end loop;
+        
+        if length(str) > 3 then
+          return NULL_CELL;
+        end if;
+        
+        str := upper(str);
+        cell.col.value := base26Decode(str);
+        if cell.col.value between 1 and MAX_COL_NUMBER then
+          cell.col.isAbsolute := absolute;
+          cell.col.alphaValue := str;
+          cell.type := RT_COLUMN;
+          cell.isNull := false;
+        else
+          return NULL_CELL;
+        end if;
+        
+        if c is null then  
+          return cell;
+        end if;
+        
+        absolute := false;
+        str := null;
+        
+        if c = '$' then
+          absolute := true;
+          get;
+        end if;
+        
       end if;
-      cell.rw.value := toLocalNumber(str);
-      if cell.rw.value between 1 and MAX_ROW_NUMBER then
-        cell.rw.isAbsolute := absolute;
-        cell.type := cell.type + RT_ROW;
+          
+      if isDigit(c) and c != '0' then
+        str := str || c;
+        get;
+        while isDigit(c) loop
+          str := str || c;
+          get;
+        end loop;
+        -- extra characters found after sequence of digits
+        if c is not null then
+          return NULL_CELL;
+        end if;
+        cell.rw.value := toLocalNumber(str);
+        if cell.rw.value between 1 and MAX_ROW_NUMBER then
+          cell.rw.isAbsolute := absolute;
+          cell.type := cell.type + RT_ROW;
+          cell.isNull := false;
+          return cell;
+        else
+          return NULL_CELL;
+        end if;
+      end if;
+    
+    else
+      -- R1C1-style cell reference
+      if c = 'R' then
+        
+        cell.type := RT_ROW;
         cell.isNull := false;
-        return cell;
-      else
-        return NULL_CELL;
+        cell.rw.value := 0;
+        get;
+        if isDigit(c) then
+          readDigits;
+          cell.rw.value := toLocalNumber(str);
+          if cell.rw.value between 1 and MAX_ROW_NUMBER then
+            cell.rw.isAbsolute := true;
+          else
+            return NULL_CELL;
+          end if;
+          
+        elsif c = '[' then
+          get;
+          if c = '-' then
+            neg := true;
+            get;
+          end if;
+          if isDigit(c) then
+            readDigits; 
+            cell.rw.value := ctx.cell.rw.value - 1 + toLocalNumber(str) * case when neg then -1 else 1 end;
+            adjustRow(cell.rw);
+            cell.rw.isAbsolute := false;
+            if c = ']' then
+              get;
+            else
+              return NULL_CELL;
+            end if;
+          else
+            return NULL_CELL;
+          end if;
+          
+        else
+          cell.rw.value := ctx.cell.rw.value;
+          --adjustRow(cell.rw);
+          cell.rw.isAbsolute := false;
+          
+        end if;
+        
+        if c is null then
+          return cell;
+        end if;
+        
       end if;
+      
+      if c = 'C' then
+      
+        cell.type := cell.type + RT_COLUMN;
+        cell.isNull := false;
+        cell.col.value := 0;
+        get;
+        
+        if isDigit(c) then
+          readDigits;
+          cell.col.value := toLocalNumber(str);
+          if cell.col.value between 1 and MAX_COL_NUMBER then
+            cell.col.isAbsolute := true;
+            cell.col.alphaValue := base26Encode(cell.col.value);
+          else
+            return NULL_CELL;
+          end if;
+          
+        elsif c = '[' then
+          get;
+          neg := false;
+          if c = '-' then
+            neg := true;
+            get;
+          end if;
+          if isDigit(c) then
+            readDigits;
+            cell.col.value := ctx.cell.col.value - 1 + toLocalNumber(str) * case when neg then -1 else 1 end;
+            adjustColumn(cell.col);
+            cell.col.isAbsolute := false;
+            if c = ']' then
+              get;
+            else
+              return NULL_CELL;
+            end if;
+          else
+            return NULL_CELL;
+          end if;
+
+        else
+          cell.col := ctx.cell.col;
+          --adjustColumn(cell.col);
+          cell.col.isAbsolute := false;
+          
+        end if;
+        
+        if c is null then
+          return cell;
+        end if;        
+      
+      end if;
+    
     end if;
     
     return NULL_CELL;
     
   end;
 
-  function isValidCellReference (input in varchar2) return boolean is
-    cell  cell_t := parseCellReference(input);
+  function isValidCellReference (input in varchar2, refStyle in pls_integer default REF_A1) return boolean is
+    cell  cell_t := parseCellReference(input, refStyle);
   begin
     return not cell.isNull and cell.type = RT_CELL;
   end;
@@ -1877,8 +2103,9 @@ create or replace package body ExcelFmla is
   is
   
     inString    boolean := false;
-    inPath      boolean := false;
+    inPrefix    boolean := false;
     inError     boolean := false;
+    inOffset    boolean := false;
     token       token_t;
     stream      tokenStream_t;
     stack       tokenStream_t;
@@ -1887,7 +2114,6 @@ create or replace package body ExcelFmla is
     
     procedure skipWs is
     begin
-      --getChar;
       while look = ' ' and not eof() loop
         getChar;
       end loop;    
@@ -1941,7 +2167,7 @@ create or replace package body ExcelFmla is
         continue;
       end if;
       
-      if inPath then
+      if inPrefix then
         if look = '''' then
           if nextChar() = '''' then
             -- escape character
@@ -1949,7 +2175,7 @@ create or replace package body ExcelFmla is
             getChar;
           else
             -- end of path reached
-            inPath := false;
+            inPrefix := false;
             -- trim leading apostrophe
             token.value := substr(token.value, 2);
             -- try to parse a worksheet prefix
@@ -1997,7 +2223,7 @@ create or replace package body ExcelFmla is
         continue;
       end if;      
     
-      if isDigit(look) and ( token.value is null /*or isPrevNonDigitBlank()*/ ) and not isPrevOrNextNonDigitRangeOp() then
+      if isDigit(look) and token.value is null and not isPrevOrNextNonDigitRangeOp() then
         
         token.type := T_NUMBER;
         token.pos := pos;
@@ -2046,7 +2272,7 @@ create or replace package body ExcelFmla is
       if look = '"' then
         trimWs;
         if token.value is not null then
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
         token := newToken(T_STRING, tokenPos => pos);
         inString := true;
@@ -2056,10 +2282,10 @@ create or replace package body ExcelFmla is
 
       if look = '''' then
         if token.value is not null then
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
         token := newToken(T_QUOTED, look, pos);
-        inPath := true;
+        inPrefix := true;
         getChar;
         continue;
       end if;      
@@ -2067,7 +2293,7 @@ create or replace package body ExcelFmla is
       if look = '#' then
         trimWs;
         if token.value is not null then
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
         inError := true;
         token := newToken(T_ERROR, look, pos);
@@ -2078,7 +2304,7 @@ create or replace package body ExcelFmla is
       if look = '{' then
         trimWs;
         if token.value is not null then
-          error('Unexpected token: %s', token.value);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
 
         token := null;
@@ -2100,7 +2326,7 @@ create or replace package body ExcelFmla is
           pushToken(stream, null, T_ARRAYROW_STOP, pos);
           pushToken(stack, pushToken(stream, null, T_ARRAYROW_START, pos));
         else
-          error('Unexpected token: %s', look);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
         
         getChar;
@@ -2119,7 +2345,7 @@ create or replace package body ExcelFmla is
           popToken(stack);
           pushToken(stream, null, T_ARRAY_STOP, pos);
         else
-          error('Unexpected token: %s', look);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end if;
         
         getChar;
@@ -2196,7 +2422,7 @@ create or replace package body ExcelFmla is
         continue;
       end if;      
 
-      if look = '-' then
+      if look = '-' and not inOffset then
         trimWs;
         pushAndClear(stream, token, T_OPERAND);
         pushToken(stream, look, OP_MINUS, pos);
@@ -2287,11 +2513,17 @@ create or replace package body ExcelFmla is
           popToken(stack);
           pushToken(stream, null, T_RIGHT, pos);
         else
-          error('Unexpected token: %s', look);
+          error(ERR_UNEXPECTED_TOKEN, look, p_pos => pos);
         end case;
         getChar;
         skipWs;
         continue;
+      end if;
+      
+      if look = '[' and ctx.refStyle = REF_R1C1 then
+        inOffset := true;
+      elsif look = ']' and inOffset then
+        inOffset := false;
       end if;
       
       append(token, look);
@@ -2299,21 +2531,24 @@ create or replace package body ExcelFmla is
     
     end loop;
     
+    if inString then
+      error('String literal not terminated', p_pos => token.pos);
+    end if;
+    
     pushAndClear(stream, token, T_OPERAND);
     
     for i in 1 .. stream.tokens.count loop
-      dbms_output.put_line(
+      debug(
         utl_lms.format_message(
-          '[%d][%s](%d,%d) %s'
-        , stream.tokens(i).type
-        , tokenLabels(stream.tokens(i).type)
+          '(%d,%d)[%d][%s] %s'
         , stream.tokens(i).pos.ln
         , stream.tokens(i).pos.cn
+        , stream.tokens(i).type
+        , tokenLabels(stream.tokens(i).type)
         , stream.tokens(i).value
         )
       );
     end loop;
-    dbms_output.put_line('===============================================================');
     return stream;
     
   end;
@@ -2412,65 +2647,11 @@ create or replace package body ExcelFmla is
     end loop;
     return areas;
   end;
-  
-  procedure test_eval_isect (r1 in varchar2, r2 in varchar2) is
-    a1  area_t;
-    a2  area_t;
-    
-    procedure setArea (a in out nocopy area_t, input in varchar2) is
-      p  pls_integer := instr(input, ':');
-    begin
-      if p != 0 then
-        a.firstCell := parseCellReference(substr(input, 1, p-1));
-        a.lastCell := parseCellReference(substr(input, p+1));
-      else
-        a.firstCell := parseCellReference(input);
-      end if;      
-    end;
-    
-  begin
-    setArea(a1, r1);
-    setArea(a2, r2);
-    
-    dbms_output.put_line(makeArea(evalIsect(a1,a2)));
-    
-  end;
 
-  procedure test_eval_range (list in apex_t_varchar2) is
-    areas  areaList_t := areaList_t();
-    area   area_t;
-    
-    procedure setArea (a in out nocopy area_t, input in varchar2) is
-      p  pls_integer := instr(input, ':');
-    begin
-      if p != 0 then
-        a.firstCell := parseCellReference(substr(input, 1, p-1));
-        a.lastCell := parseCellReference(substr(input, p+1));
-      else
-        a.firstCell := parseCellReference(input);
-      end if;      
-    end;
-    
-  begin
-    
-    if list is not empty then
-      areas.extend(list.count);
-      for i in 1 .. list.count loop
-        area := NULL_AREA;
-        setArea(area, list(i));
-        extendArea(area);
-        areas(i) := area;
-      end loop;
-    end if;
-    
-    dbms_output.put_line(makeArea(evalRange(areas)));
-    
-  end;
-
-  function getRPNArray (rootId in pls_integer, includeAux in boolean default true) return intList_t
+  function getRPNArray (rootId in nodeHandle, includeAux in boolean default true) return nodeHandleList_t
   is
-    arr  intList_t := intList_t();
-    procedure readNode (nodeId in pls_integer) is
+    arr  nodeHandleList_t := nodeHandleList_t();
+    procedure readNode (nodeId in nodeHandle) is
     begin
       if isExpr(t(nodeId)) then
         for i in 1 .. t(nodeId).children.count loop
@@ -2480,25 +2661,25 @@ create or replace package body ExcelFmla is
         if not isAuxPtg(t(nodeId).nodeType) or includeAux then
           arr.extend;
           arr(arr.last) := nodeId;
-          dbms_output.put_line(ptgLabel(t(nodeId)));
+          debug(ptgLabel(t(nodeId)));
         end if;
       end if;
     end;
   begin
 
-    dbms_output.put_line('======= BEGIN RPN ARRAY =======');
+    debug('======= BEGIN RPN ARRAY =======');
     readNode(rootId);
-    dbms_output.put_line('======= END RPN ARRAY =======');
+    debug('======= END RPN ARRAY =======');
     
     return arr;
   end;
 
-  function evalBinaryRef (rootId in pls_integer) return areaList_t
+  function evalBinaryRef (rootId in nodeHandle) return areaList_t
   is
     type areaListStack_t is table of areaList_t;
     st  areaListStack_t := areaListStack_t();
     
-    ptgArray  intList_t := getRPNArray(rootId, false);
+    ptgArray  nodeHandleList_t := getRPNArray(rootId, false);
     
     area   area_t;
     areas  areaList_t;
@@ -2534,10 +2715,8 @@ create or replace package body ExcelFmla is
         for i in 1 .. a1.count loop
           for j in 1 .. a2.count loop
             area := evalIsect(a1(i), a2(j));
-            --if not isNull(area) then
-              areas.extend;
-              areas(areas.last) := area;
-            --end if;
+            areas.extend;
+            areas(areas.last) := area;
           end loop;
         end loop;
         
@@ -2567,19 +2746,19 @@ create or replace package body ExcelFmla is
     end if;
     
     for i in 1 .. areas.count loop
-      dbms_output.put_line(makeArea(areas(i)));
+      debug(makeArea(areas(i)));
     end loop;
     
     return areas;
     
   end;
 
-  procedure traverse (nodeId in out nocopy pls_integer, childIdx in pls_integer default null)
+  procedure traverse (nodeId in out nocopy nodeHandle, childIdx in pls_integer default null)
   is
-    exprId    pls_integer;
-    memPtgId  pls_integer;
-    parentId  pls_integer;
-    childId   pls_integer;
+    exprId    nodeHandle;
+    memPtgId  nodeHandle;
+    parentId  nodeHandle;
+    childId   nodeHandle;
     areas     areaList_t;
   begin
   
@@ -2638,7 +2817,7 @@ create or replace package body ExcelFmla is
   end;
 
   procedure transformOperand (
-    nodeId         in pls_integer
+    nodeId         in nodeHandle
   , convInfo       in operandInfo_t
   , prevConv       in pls_integer
   , prevClassConv  in pls_integer
@@ -2650,101 +2829,95 @@ create or replace package body ExcelFmla is
     tokenClass  pls_integer := node.nodeClass;
     conv        pls_integer;
     classConv   pls_integer;
-    childNodeId  pls_integer;
+    childNodeId  nodeHandle;
     nodeType     pls_integer;
   
   begin
-    
-    dbms_output.put_line(ptgLabel(node)||':'||node.token);
     
     if not isBasePtg(node.nodeType) or isExpr(node) then
     
       -- REF tokens in VALTYPE parameters behave like VAL tokens
       if convInfo.valueType and tokenClass = VT_REFERENCE then
         tokenClass := VT_VALUE;
-        --apply
       end if;
       
       -- replace RPO conversion of operator with parent conversion
-      conv := case when convInfo.convClass = EXC_PARAMCONV_RPO then prevConv else convInfo.convClass end;
+      conv := case when convInfo.convClass = PARAMCONV_RPO then prevConv else convInfo.convClass end;
       
       -- find the effective token class conversion to be performed for this token
-      classConv := EXC_CLASSCONV_ORG;
+      classConv := CLASSCONV_ORG;
       
       case conv
-      when EXC_PARAMCONV_ORG then
+      when PARAMCONV_ORG then
         -- conversion is forced independent of parent conversion
-        classConv := EXC_CLASSCONV_ORG;
+        classConv := CLASSCONV_ORG;
         
-      when EXC_PARAMCONV_VAL then
+      when PARAMCONV_VAL then
         -- conversion is forced independent of parent conversion
-        classConv := EXC_CLASSCONV_VAL;
+        classConv := CLASSCONV_VAL;
         
-      when EXC_PARAMCONV_ARR then
+      when PARAMCONV_ARR then
         -- conversion is forced independent of parent conversion
-        classConv := EXC_CLASSCONV_ARR;
+        classConv := CLASSCONV_ARR;
         
-      when EXC_PARAMCONV_RPT then
+      when PARAMCONV_RPT then
         case 
-        when prevConv in (EXC_PARAMCONV_ORG, EXC_PARAMCONV_VAL, EXC_PARAMCONV_ARR) then
+        when prevConv in (PARAMCONV_ORG, PARAMCONV_VAL, PARAMCONV_ARR) then
           /*  If parent token has REF class (REF token in REFTYPE
                           function parameter), then RPT does not repeat the
                           previous explicit ORG or ARR conversion, but always
                           falls back to VAL conversion. */
-          classConv := case when wasRefClass then EXC_CLASSCONV_VAL else prevClassConv end;
+          classConv := case when wasRefClass then CLASSCONV_VAL else prevClassConv end;
           
-        when prevConv = EXC_PARAMCONV_RPT then
+        when prevConv = PARAMCONV_RPT then
           -- nested RPT repeats the previous effective conversion
           classConv := prevClassConv;
           
-        when prevConv = EXC_PARAMCONV_RPX then
+        when prevConv = PARAMCONV_RPX then
           /*  If parent token has REF class (REF token in REFTYPE
                           function parameter), then RPX repeats the previous
                           effective conversion (which will be either ORG or ARR,
                           but never VAL), otherwise falls back to ORG conversion. */
-          classConv := case when wasRefClass then prevClassConv else EXC_CLASSCONV_ORG end;
+          classConv := case when wasRefClass then prevClassConv else CLASSCONV_ORG end;
         
-        when prevConv = EXC_PARAMCONV_RPO then
+        when prevConv = PARAMCONV_RPO then
           null;
           
         end case;
         
-      when EXC_PARAMCONV_RPX then
+      when PARAMCONV_RPX then
         /*  If current token still has REF class, set previous effective
                   conversion as current conversion. This will not have an effect
                   on the REF token but is needed for RPT parameters of this
                   function that want to repeat this conversion type. If current
                   token is VAL or ARR class, the previous ARR conversion will be
                   repeated on the token, but VAL conversion will not. */
-        classConv := case when tokenClass = VT_REFERENCE or prevClassConv = EXC_CLASSCONV_ARR then prevClassConv else EXC_CLASSCONV_ORG end;
+        classConv := case when tokenClass = VT_REFERENCE or prevClassConv = CLASSCONV_ARR then prevClassConv else CLASSCONV_ORG end;
       
-      when EXC_PARAMCONV_RPO then
+      when PARAMCONV_RPO then
         null;
         
       end case;
       
       -- do the token class conversion                
       case classConv
-      when EXC_CLASSCONV_ORG then
+      when CLASSCONV_ORG then
         /*  Cell formulas: leave the current token class. Cell formulas
                   are the only type of formulas where all tokens can keep
                   their original token class.
                   Array and defined name formulas: convert VAL to ARR. */
-        if ctx.config.fmlaClassType != EXC_CLASSTYPE_CELL and tokenClass = VT_VALUE then
+        if ctx.config.fmlaClassType != CLASSTYPE_CELL and tokenClass = VT_VALUE then
           tokenClass := VT_ARRAY;
-          --apply
         end if;
         
-      when EXC_CLASSCONV_VAL then
+      when CLASSCONV_VAL then
         if tokenClass = VT_ARRAY then
           tokenClass := VT_VALUE;
-          --apply
         end if;
         
-      when EXC_CLASSCONV_ARR then
+      when CLASSCONV_ARR then
         if tokenClass = VT_VALUE then
           tokenClass := VT_ARRAY;
-          -- apply
         end if;
         
       end case;
@@ -2800,13 +2973,11 @@ create or replace package body ExcelFmla is
         end loop;
       end if;
 
-    
     end if;
     
-  
   end;
 
-  procedure transformOperands (rootId in pls_integer) is
+  procedure transformOperands (rootId in nodeHandle) is
   
     nameFmla        boolean;
     paramConv       pls_integer;
@@ -2816,16 +2987,16 @@ create or replace package body ExcelFmla is
   begin
     
     if ctx.config.fmlaType is null then
-      ctx.config.fmlaType := EXC_FMLATYPE_CELL;
+      ctx.config.fmlaType := FMLATYPE_CELL;
     end if;
     ctx.config.fmlaClassType := case 
-                                when ctx.config.fmlaType in (EXC_FMLATYPE_CELL, EXC_FMLATYPE_SHARED) then EXC_CLASSTYPE_CELL
-                                when ctx.config.fmlaType in (EXC_FMLATYPE_MATRIX, EXC_FMLATYPE_CONDFMT, EXC_FMLATYPE_DATAVAL) then EXC_CLASSTYPE_ARRAY
-                                else EXC_CLASSTYPE_NAME
+                                when ctx.config.fmlaType in (FMLATYPE_CELL, FMLATYPE_SHARED) then CLASSTYPE_CELL
+                                when ctx.config.fmlaType in (FMLATYPE_MATRIX, FMLATYPE_CONDFMT, FMLATYPE_DATAVAL) then CLASSTYPE_ARRAY
+                                else CLASSTYPE_NAME
                                 end;
-    nameFmla := ( ctx.config.fmlaClassType = EXC_CLASSTYPE_NAME );
-    paramConv := case when nameFmla then EXC_PARAMCONV_ARR else EXC_PARAMCONV_VAL end;
-    classConv := case when nameFmla then EXC_CLASSCONV_ARR else EXC_CLASSCONV_VAL end;    
+    nameFmla := ( ctx.config.fmlaClassType = CLASSTYPE_NAME );
+    paramConv := case when nameFmla then PARAMCONV_ARR else PARAMCONV_VAL end;
+    classConv := case when nameFmla then CLASSCONV_ARR else CLASSCONV_VAL end;    
   
     convInfo.convClass := paramConv;
     convInfo.valueType := not(nameFmla);  
@@ -2840,17 +3011,17 @@ create or replace package body ExcelFmla is
   
   end;
 
-  function compile (input in intList_t) return pls_integer is
+  function compile (input in nodeHandleList_t) return pls_integer is
 
-    rootId           pls_integer;
-    currentParentId  pls_integer;
-    firstChildId     pls_integer;
+    rootId           nodeHandle;
+    currentParentId  nodeHandle;
+    firstChildId     nodeHandle;
     
     node             parseNode_t;
     top              parseNode_t; 
     st               parseNodeList_t := parseNodeList_t();
     
-    procedure setChildrenConversion (parentId in pls_integer, nodeType in pls_integer, funcName in varchar2 default null) is
+    procedure setChildrenConversion (parentId in nodeHandle, nodeType in pls_integer, funcName in varchar2 default null) is
       info   operandInfo_t;
       meta   functionMetadata_t;
       argc   pls_integer;
@@ -2912,7 +3083,7 @@ create or replace package body ExcelFmla is
         leftSibling := t(t(currentParentId).children(childIdx));
         if isExpr(leftSibling) and leftSibling.children.count > 1 and leftSibling.nodeType is null then
           -- anonymous expression with more than one child = syntax error
-          error('Unexpected token: %s', t(leftSibling.children(2)).token);
+          error(ERR_UNEXPECTED_TOKEN, t(leftSibling.children(2)).token, p_pos => t(leftSibling.children(2)).pos);
         elsif isExpr(leftSibling) and leftSibling.children.count <= 1 and nvl(leftSibling.nodeType, -1) != EXPR_FUNC_CALL then
           if leftSibling.children.count = 1 then
             -- move operand
@@ -2941,7 +3112,7 @@ create or replace package body ExcelFmla is
       elsif node.nodeType in (PTG_ISECT, PTG_UNION, PTG_RANGE) then
         
         if not(t(t(currentParentId).children(1)).nodeClass = VT_REFERENCE and t(t(currentParentId).children(2)).nodeClass = VT_REFERENCE) then
-          error('Unexpected token: %s', ptgLabel(node));
+          error(ERR_UNEXPECTED_TOKEN, ptgLabel(node), p_pos => node.pos);
         end if;
       
         t(currentParentId).nodeType := EXPR_BINARY_REF;
@@ -2968,9 +3139,9 @@ create or replace package body ExcelFmla is
       
     end;
     
-    procedure wrapExpression (sourceId in pls_integer) is
-      childId   pls_integer;
-      targetId  pls_integer := createPtg(null);
+    procedure wrapExpression (sourceId in nodeHandle) is
+      childId   nodeHandle;
+      targetId  nodeHandle := createPtg(null);
     begin
       t(targetId).children := t(sourceId).children;
       
@@ -2991,7 +3162,7 @@ create or replace package body ExcelFmla is
     end;
 
     procedure pushExpr is
-      nodeId  pls_integer;
+      nodeId  nodeHandle;
     begin
       nodeId := createPtg(null);
       pushOut(t(nodeId));
@@ -3052,7 +3223,7 @@ create or replace package body ExcelFmla is
           
           loop
             if isEmpty(st) then
-              error('Compilation error at position %d : separator misplaced or parentheses mismatched', 0 /*TODO*/);
+              error('Separator misplaced or parentheses mismatched', p_pos => node.pos);
             end if;
             top := peek(st);
             exit when isPtgFunc(top.nodeType);
@@ -3099,7 +3270,7 @@ create or replace package body ExcelFmla is
           
           loop
             if isEmpty(st) then
-              error('Compilation error at position %d : parentheses mismatched', 0 /*TODO*/);
+              error(ERR_PAREN_MISMATCHED, p_pos => node.pos);
             end if;
             top := peek(st);
             exit when top.nodeType = XPTG_PAREN_LEFT;
@@ -3115,7 +3286,7 @@ create or replace package body ExcelFmla is
           
           loop
             if isEmpty(st) then
-              error('Compilation error at position %d : parentheses mismatched', 0 /*TODO*/);
+              error(ERR_PAREN_MISMATCHED, p_pos => node.pos);
             end if;
             top := peek(st);
             exit when isPtgFunc(top.nodeType);
@@ -3137,13 +3308,13 @@ create or replace package body ExcelFmla is
           -- wrap function call in an expression
           wrapExpression(currentParentId);
           
-        when node.nodeType in (PTG_STR, PTG_ERR, PTG_BOOL, PTG_INT, PTG_NUM, PTG_ARRAY_A, PTG_NAME_R, PTG_REF_R, PTG_AREA_R, PTG_NAMEX_R, PTG_REF3D_R, PTG_AREA3D_R, PTG_MISSARG) then
+        when node.nodeType in (PTG_STR, PTG_ERR, PTG_BOOL, PTG_INT, PTG_NUM, PTG_ARRAY_A, PTG_NAME_R, PTG_REF_R, PTG_REFN_R, PTG_AREA_R, PTG_AREAN_R, PTG_NAMEX_R, PTG_REF3D_R, PTG_AREA3D_R, PTG_MISSARG) then
           
           pushOut(node);
           
         else
           
-          error('Unexpected Ptg: %d', node.nodeType);
+          error(ERR_UNEXPECTED_TOKEN, ptgLabel(node), p_pos => node.pos);
         
         end case;
       
@@ -3152,7 +3323,7 @@ create or replace package body ExcelFmla is
       while not isEmpty(st) loop
         top := peek(st);
         if top.nodeType = XPTG_PAREN_LEFT or isPtgFunc(top.nodeType) then
-          error('Compilation error at position %d : parentheses mismatched', 0 /*TODO*/);
+          error(ERR_PAREN_MISMATCHED, p_pos => top.pos);
         end if;
         pop();
         pushOut(top);
@@ -3161,11 +3332,14 @@ create or replace package body ExcelFmla is
       -- if root node has a single child expression, make it the new root
       if t(rootId).children.count = 1 then
         firstChildId := t(rootId).children(1);
-        --if isExpr(t(firstChildId)) then
-          t(firstChildId).parentId := null;
-          t.delete(rootId);
-          rootId := firstChildId;
-        --end if;
+        t(firstChildId).parentId := null;
+        t.delete(rootId);
+        rootId := firstChildId;
+      end if;
+      
+      -- syntax error if root node is an anonymous expression
+      if t(rootId).nodeType is null then
+        error(ERR_UNEXPECTED_TOKEN, t(t(rootId).children(2)).token, p_pos => t(t(rootId).children(2)).pos);
       end if;
 
       traverse(rootId);
@@ -3175,9 +3349,8 @@ create or replace package body ExcelFmla is
     
     return rootId;
   
-  end;  
-
-
+  end;
+  
   function parseAll (
     input in varchar2
   )
@@ -3186,15 +3359,16 @@ create or replace package body ExcelFmla is
     token   token_t;
     area3d  area3d_t;
     name    name_t;
+    tmp     token_t;
     
     idx     pls_integer;
-    nodeId  pls_integer;
+    nodeId  nodeHandle;
     nodeType  pls_integer;
     
     NULL_NODE  parseNode_t;
     
-    nodeIdList  intList_t := intList_t();
-    output      intList_t;
+    nodeIdList  nodeHandleList_t := nodeHandleList_t();
+    output      nodeHandleList_t;
     
     stream  tokenStream_t;
     
@@ -3225,7 +3399,6 @@ create or replace package body ExcelFmla is
   
       null_node.id := -1;
       null_node.nodeType := 128;
-      
       
       stream := tokenize(input);
       
@@ -3295,7 +3468,7 @@ create or replace package body ExcelFmla is
         when getTokenTypeSequence(stream, 3) = SHEET_CELL_REF then
           area3d.prefix.sheetRange.firstSheet := getSheet(nextToken(stream, 0).parsedValue.ident.value);
           area3d.prefix.isNull := false;
-          area3d.area.firstCell := nextToken(stream, 2).parsedValue.cell;     
+          area3d.area.firstCell := nextToken(stream, 2).parsedValue.cell;
           stream.idx := stream.idx + 3 - 1;
           
           nodeId := createPtgRef3d(area3d, token.pos);
@@ -3307,7 +3480,7 @@ create or replace package body ExcelFmla is
           
           nodeId := createPtgNameX(name, token.pos);
           
-        -- special case: defined name matches a sheet name 
+        -- special case: (scoped) name matches a sheet name 
         when getTokenTypeSequence(stream, 2) = SHEET_PREFIX and nextToken(stream, 2).type = T_NAME then
           name.scope := getSheet(nextToken(stream, 0).parsedValue.ident.value);
           name.value := nextToken(stream, 2).parsedValue.ident.value;
@@ -3315,28 +3488,60 @@ create or replace package body ExcelFmla is
           
           nodeId := createPtgNameX(name, token.pos);
 
+        -- special case: (scoped) name matches a column reference
+        when getTokenTypeSequence(stream, 2) = SHEET_PREFIX and nextToken(stream, 2).type = T_COL_REF then
+          tmp := nextToken(stream, 2); -- T_COL_REF token
+          if tmp.parsedValue.cell.col.isAbsolute then
+            error(ERR_UNEXPECTED_TOKEN, tokenLabels(tmp.type), p_pos => tmp.pos);
+          end if;
+          name.scope := getSheet(nextToken(stream, 0).parsedValue.ident.value);
+          name.value := tmp.value;
+          stream.idx := stream.idx + 3 - 1;
+            
+          nodeId := createPtgNameX(name, token.pos);
+
         when getTokenTypeSequence(stream, 3) in (ROW_RANGE, COL_RANGE, CELL_RANGE) then
           area3d.area.firstCell := nextToken(stream, 0).parsedValue.cell;
           area3d.area.lastCell := nextToken(stream, 2).parsedValue.cell;
           normalizeArea(area3d.area);
           stream.idx := stream.idx + 3 - 1;
-          
-          nodeId := createPtgArea(area3d, token.pos);
+
+          -- if this is a name formula, force a sheet scope using the context sheet (MUST be set by the caller)
+          if ctx.config.fmlaType = FMLATYPE_NAME then
+            if ctx.sheet.idx is null then
+              error(ERR_UNSCOPED_REF, p_pos => token.pos);
+            end if;
+            area3d.prefix.sheetRange.firstSheet := ctx.sheet;
+            area3d.prefix.isNull := false;
+            nodeId := createPtgArea3d(area3d, token.pos);
+          else
+            nodeId := createPtgArea(area3d, token.pos);
+          end if;
         
         when token.type = T_CELL_REF then
           
           area3d.area.firstCell := token.parsedValue.cell;
-          nodeId := createPtgRef(area3d, token.pos);
-
+          
+          -- if this is a name formula, force a sheet scope using the context sheet (MUST be set by the caller)
+          if ctx.config.fmlaType = FMLATYPE_NAME then
+            if ctx.sheet.idx is null then
+              error(ERR_UNSCOPED_REF, p_pos => token.pos);
+            end if;
+            area3d.prefix.sheetRange.firstSheet := ctx.sheet;
+            area3d.prefix.isNull := false;
+            nodeId := createPtgRef3d(area3d, token.pos);
+          else
+            nodeId := createPtgRef(area3d, token.pos);
+          end if;
 
         -- fallback to T_NAME for unmatched T_COL_REF
         when token.type = T_COL_REF then
           
           if not token.parsedValue.cell.col.isAbsolute then
-            name.value := token.parsedValue.cell.col.alphaValue;
+            name.value := token.value;
             nodeId := createPtgName(name, token.pos);
           else
-            error('Unexpected token: %s', tokenLabels(token.type));
+            error(ERR_UNEXPECTED_TOKEN, tokenLabels(token.type), p_pos => token.pos);
           end if;
 
         when token.type = T_NAME then
@@ -3399,7 +3604,7 @@ create or replace package body ExcelFmla is
         
         else
           
-          error('Unexpected token: %s', tokenLabels(token.type));
+          error(ERR_UNEXPECTED_TOKEN, tokenLabels(token.type), p_pos => token.pos);
         
         end case;
         
@@ -3421,14 +3626,13 @@ create or replace package body ExcelFmla is
           then
             t(nodeIdList(i)).nodeType := PTG_ISECT;
             t(nodeIdList(i)).token := opMetadataMap(PTG_ISECT).token;
-            --t(nodeIdList(i)).nodeClass := opMetadataMap(PTG_ISECT).returnClass;
           elsif prevPtg(i).nodeType in (PTG_STR, PTG_ERR, PTG_BOOL, PTG_INT, PTG_NUM) 
              and not opMetadataMap.exists(nextPtg(i).nodeType)
              or nextPtg(i).nodeType in (PTG_STR, PTG_ERR, PTG_BOOL, PTG_INT, PTG_NUM) 
              and not opMetadataMap.exists(prevPtg(i).nodeType)
             
           then
-            error('Unexpected token: %s', ptgLabels(XPTG_SPACE)); -- TODO: at position %d
+            error(ERR_UNEXPECTED_TOKEN, ptgLabels(XPTG_SPACE), p_pos => getPtg(i).pos);
           else
             -- discard this node
             nodeIdList.delete(i);
@@ -3482,24 +3686,13 @@ create or replace package body ExcelFmla is
       end loop;
 
       -- copy to a dense list
-      output := intList_t();
+      output := nodeHandleList_t();
       idx := nodeIdList.first;   
       while idx is not null loop
         output.extend;
         output(output.last) := nodeIdList(idx);
         idx := nodeIdList.next(idx);
       end loop;
-
-      /*
-      for i in 1 .. output.count loop
-        dbms_output.put_line(
-          utl_lms.format_message(
-            '%s'
-          , ptgLabels(t(output(i)).nodeType)
-          )
-        );
-      end loop;
-      */
     
     end if;
     
@@ -3507,18 +3700,16 @@ create or replace package body ExcelFmla is
     
   end;
   
-  function getParseTree (input in varchar2) return parseTree_t pipelined is
+  function getParseTree (input in varchar2, refStyle in pls_integer default REF_A1) return parseTree_t pipelined is
     
-    rootId  pls_integer := parseAll(input);
-    
-    type miniStackEntry_t is record (nodeId pls_integer, childIdx pls_integer);
+    type miniStackEntry_t is record (/*nodeId pls_integer,*/ childIdx pls_integer);
     type miniStack_t is table of miniStackEntry_t;
     
-    st  miniStack_t := miniStack_t();
-
-    nodeId     pls_integer;
-    node       parseNode_t;
-    nodeLevel  pls_integer := 1;
+    st                 miniStack_t := miniStack_t();
+    rootId             nodeHandle;
+    nodeId             nodeHandle;
+    node               parseNode_t;
+    nodeLevel          pls_integer := 1;
     currentChildIndex  pls_integer;
     
     procedure push is
@@ -3542,7 +3733,9 @@ create or replace package body ExcelFmla is
     end;
     
   begin
-      
+    
+    ctx.refStyle := refStyle;
+    rootId := parseAll(input);
     ctx.treeRootId := rootId;
     
     if rootId is not null then
@@ -3602,253 +3795,6 @@ create or replace package body ExcelFmla is
     end if;
     
     return;
-  
-  end;
-
-  function getFunctionalTree (input in varchar2) return parseTree_t pipelined is
-    
-    rootId  pls_integer;
-    
-    type miniStackEntry_t is record (nodeId pls_integer, childIdx pls_integer);
-    type miniStack_t is table of miniStackEntry_t;
-    
-    st  miniStack_t := miniStack_t();
-
-    nodeId     pls_integer;
-    node       parseNode_t;
-    nodeLevel  pls_integer := 1;
-    currentChildIndex  pls_integer;
-    lastChildId  pls_integer;
-    
-    procedure push is
-    begin
-      currentChildIndex := 1;
-      st.extend;
-      st(st.last).childIdx := currentChildIndex;
-    end;
-    
-    function makeTreeNode return parseTreeNode_t is
-      treeNode  parseTreeNode_t;
-    begin
-      treeNode.id := node.id;
-      treeNode.nodeType := node.nodeType;
-      treeNode.nodeTypeName := ptgLabel(node);
-      treeNode.parentId := node.parentId;
-      treeNode.nodeLevel := nodeLevel;
-      treeNode.token := node.token;
-      treeNode.nodeClass := node.nodeClass;
-      treeNode.nodeStatus := case when node.children is empty then 0 else 1 end;
-      return treeNode; 
-    end;
-    
-  begin
-    
-    begin
-      
-    rootId := parseAll(input);
-  
-    if rootId is not null then
-  
-      nodeId := rootId;
-    
-      <<main>>
-      loop
-        
-        node := t(nodeId);
-        
-        if node.nodeType = EXPR_MEM_AREA then
-          lastChildId := node.children(node.children.last);
-          t(lastChildId).parentId := node.parentId;
-          if node.parentId is not null then
-            node.children(currentChildIndex) := lastChildId;
-          end if;
-          node := t(lastChildId);
-        end if;
-        
-        if isExpr(node) then
-          -- last child represents either an operator or a function
-          lastChildId := node.children(node.children.last);
-          node.children.trim;
-          -- substitute current node with that child in the tree
-          t(lastChildId).parentId := node.parentId;
-          -- attach operands to their new parent
-          for i in 1 .. node.children.count loop
-            t(node.children(i)).parentId := lastChildId;
-          end loop;
-          -- adopt children
-          t(lastChildId).children := node.children;
-          t.delete(nodeId);
-          node := t(lastChildId);
-        end if;
-        
-        pipe row ( makeTreeNode() );
-        
-        if node.children is not empty then
-        
-          push();
-          nodeId := node.children(currentChildIndex);
-          nodeLevel := nodeLevel + 1;
-        
-        else
-          
-          if node.parentId is not null then
-          
-            loop
-              
-              node := t(node.parentId);
-              
-              -- get next sibling
-              if currentChildIndex < node.children.count then
-                currentChildIndex := currentChildIndex + 1;
-                st(st.last).childIdx := currentChildIndex;
-                nodeId := node.children(currentChildIndex);
-                exit;
-              else
-                -- parent has no more children to visit
-                nodeLevel := nodeLevel - 1;
-                st.trim;
-                
-                if nodeLevel = 1 then
-                  -- we are at the root node : exit all
-                  exit main;
-                end if;
-                
-                currentChildIndex := st(st.last).childIdx;
-                
-              end if;
-            
-            end loop;
-            
-          else
-            exit main;
-          end if;
-        
-        end if;
-        
-      end loop;
-
-    end if;
-    
-    exception
-      when others then
-        null;
-    
-    end;
-       
-    return;
-  
-  end;
-
-  function getNodeList (rootId in pls_integer) return parseNodeList_t is
-    
-    nl  parseNodeList_t := t;
-    
-    type miniStackEntry_t is record (nodeId pls_integer, childIdx pls_integer);
-    type miniStack_t is table of miniStackEntry_t;
-    
-    st  miniStack_t := miniStack_t();
-
-    nodeId     pls_integer;
-    node       parseNode_t;
-    nodeLevel  pls_integer := 1;
-    currentChildIndex  pls_integer;
-    lastChildId  pls_integer;
-    
-    procedure push is
-    begin
-      currentChildIndex := 1;
-      st.extend;
-      st(st.last).childIdx := currentChildIndex;
-    end;
-    
-    function makeTreeNode return parseTreeNode_t is
-      treeNode  parseTreeNode_t;
-    begin
-      treeNode.id := node.id;
-      treeNode.nodeType := node.nodeType;
-      treeNode.nodeTypeName := ptgLabel(node);
-      treeNode.parentId := node.parentId;
-      treeNode.nodeLevel := nodeLevel;
-      treeNode.token := node.token;
-      treeNode.nodeClass := node.nodeClass;
-      treeNode.nodeStatus := case when node.children is empty then 0 else 1 end;
-      return treeNode; 
-    end;
-    
-  begin
-    
-    if rootId is not null then
-  
-      nodeId := rootId;
-    
-      <<main>>
-      loop
-        
-        node := nl(nodeId);
-        
-        if isExpr(node) then
-          -- last child represents either an operator or a function
-          lastChildId := node.children(node.children.last);
-          node.children.trim;
-          -- substitute current node with that child in the tree
-          nl(lastChildId).parentId := node.parentId;
-          -- attach operands to their new parent
-          for i in 1 .. node.children.count loop
-            nl(node.children(i)).parentId := lastChildId;
-          end loop;
-          -- adopt children
-          nl(lastChildId).children := node.children;
-          nl.delete(nodeId);
-          node := nl(lastChildId);
-        end if;
-        
-        if node.children is not empty then
-        
-          push();
-          nodeId := node.children(currentChildIndex);
-          nodeLevel := nodeLevel + 1;
-        
-        else
-          
-          if node.parentId is not null then
-          
-            loop
-              
-              node := t(node.parentId);
-              
-              -- get next sibling
-              if currentChildIndex < node.children.count then
-                currentChildIndex := currentChildIndex + 1;
-                st(st.last).childIdx := currentChildIndex;
-                nodeId := node.children(currentChildIndex);
-                exit;
-              else
-                -- parent has no more children to visit
-                nodeLevel := nodeLevel - 1;
-                st.trim;
-                
-                if nodeLevel = 1 then
-                  -- we are at the root node : exit all
-                  exit main;
-                end if;
-                
-                currentChildIndex := st(st.last).childIdx;
-                
-              end if;
-            
-            end loop;
-            
-          else
-            exit main;
-          end if;
-        
-        end if;
-        
-      end loop;
-    
-    end if;
-    
-    return null;
   
   end;
   
@@ -3925,9 +3871,9 @@ create or replace package body ExcelFmla is
     
   end;
   
-  procedure putPtgType (ptg in parseNode_t) is
+  procedure putPtgType (ptgType in pls_integer) is
   begin
-    putBytes(toBin(ptg.nodeType, 1));
+    putBytes(toBin(ptgType, 1));
   end;
 
   procedure putStr (str in varchar2) is
@@ -4023,7 +3969,7 @@ create or replace package body ExcelFmla is
     putBytes(colRelShort(area.lastCell));   -- columnLast
   end;
   
-  procedure putPtg (nodeId in pls_integer);
+  procedure putPtg (nodeId in nodeHandle);
 
   procedure putChildren (ptg in parseNode_t) is
   begin
@@ -4038,7 +3984,7 @@ create or replace package body ExcelFmla is
     ccePtr    pls_integer;
   begin
     
-    putPtgType(memPtg);
+    putPtgType(memPtg.nodeType);
   
     case
     when memPtg.nodeType in (PTG_MEMAREA_R, PTG_MEMAREA_V, PTG_MEMAREA_A) then
@@ -4179,7 +4125,7 @@ create or replace package body ExcelFmla is
   end;
   
   procedure putFuncCall (ptg in parseNode_t) is
-    funcPtgId  pls_integer := ptg.children(ptg.children.last);
+    funcPtgId  nodeHandle := ptg.children(ptg.children.last);
     funcName   varchar2(256) := ptgFuncVarList(funcPtgId).name;
     funcMeta   functionMetadata_t;
     xlfnName   name_t;
@@ -4225,7 +4171,7 @@ create or replace package body ExcelFmla is
   begin
     putBytes(toBin(ixti, 2));
     -- loc
-    if ctx.config.fmlaType = EXC_FMLATYPE_NAME then
+    if ctx.config.fmlaType = FMLATYPE_NAME then
       putRgceLocRel(ref3d.area.firstCell);
     else
       putRgceLoc(ref3d.area.firstCell);
@@ -4237,14 +4183,14 @@ create or replace package body ExcelFmla is
   begin
     putBytes(toBin(ixti, 2));
     -- area
-    if ctx.config.fmlaType = EXC_FMLATYPE_NAME then
+    if ctx.config.fmlaType = FMLATYPE_NAME then
       putRgceAreaRel(area3d.area);
     else
       putRgceArea(area3d.area);
     end if;
   end;
   
-  procedure putPtg (nodeId in pls_integer) is
+  procedure putPtg (nodeId in nodeHandle) is
     ptg  parseNode_t := t(nodeId);
   begin
 
@@ -4267,7 +4213,7 @@ create or replace package body ExcelFmla is
       
     elsif isBasePtg(ptg.nodeType) then
 
-      putPtgType(ptg);
+      putPtgType(ptg.nodeType);
 
       case ptg.nodeType
       when PTG_STR then
@@ -4301,7 +4247,7 @@ create or replace package body ExcelFmla is
       
     else
       
-      putPtgType(ptg);
+      putPtgType(ptg.nodeType);
     
       case
       when ptg.nodeType in (PTG_ARRAY_R, PTG_ARRAY_V, PTG_ARRAY_A) then
@@ -4321,9 +4267,15 @@ create or replace package body ExcelFmla is
         
       when ptg.nodeType in (PTG_REF_R, PTG_REF_V, PTG_REF_A) then
         putRgceLoc(ptgArea3dList(ptg.id).value.area.firstCell);
-        
+      
+      when ptg.nodeType in (PTG_REFN_R, PTG_REFN_V, PTG_REFN_A) then
+        putRgceLocRel(ptgArea3dList(ptg.id).value.area.firstCell);
+      
       when ptg.nodeType in (PTG_AREA_R, PTG_AREA_V, PTG_AREA_A) then
         putRgceArea(ptgArea3dList(ptg.id).value.area);
+
+      when ptg.nodeType in (PTG_AREAN_R, PTG_AREAN_V, PTG_AREAN_A) then
+        putRgceAreaRel(ptgArea3dList(ptg.id).value.area);
         
       when ptg.nodeType in (PTG_REF3D_R, PTG_REF3D_V, PTG_REF3D_A) then
         putRef3d(ptgArea3dList(ptg.id).value);
@@ -4339,11 +4291,11 @@ create or replace package body ExcelFmla is
     
   end;
   
-  function serialize (nodeId in pls_integer)
+  function serialize (nodeId in nodeHandle)
   return stream_t  
   is
     ptg        parseNode_t := t(nodeId);
-    funcPtgId  pls_integer;
+    funcPtgId  nodeHandle;
     str        stream_t;
   begin
 
@@ -4420,9 +4372,19 @@ create or replace package body ExcelFmla is
     return serialize(ctx.treeRootId).chars.content;
   end;
   
-  function parse (p_expr in varchar2) return varchar2
+  function parse (
+    p_expr     in varchar2
+  , p_type     in pls_integer default null
+  , p_cellRef  in varchar2 default null
+  , p_refStyle in pls_integer default null
+  ) 
+  return varchar2
   is
   begin
+    ctx.binary := false;
+    ctx.refStyle := nvl(p_refStyle, REF_A1);
+    setFormulaType(nvl(p_type, FMLATYPE_CELL));
+    setCurrentCell(nvl(p_cellRef, 'A1'));
     return serialize(parseAll(p_expr)).chars.content;
   end;
   
@@ -4430,17 +4392,21 @@ create or replace package body ExcelFmla is
     p_expr     in varchar2
   , p_type     in pls_integer default null
   , p_cellRef  in varchar2 default null
+  , p_refStyle in pls_integer default null
   ) 
   return raw
   is
-    rootId  pls_integer;
+    rootId  nodeHandle;
   begin
-    setFormulaType(nvl(p_type, EXC_FMLATYPE_CELL));
+    setFormulaType(nvl(p_type, FMLATYPE_CELL));
     setCurrentCell(nvl(p_cellRef, 'A1'));
     ctx.definedNames := ExcelTypes.CT_DefinedNames();
     ctx.volatile := false;
+    ctx.binary := true;
+    ctx.refStyle := nvl(p_refStyle, REF_A1);
     rootId := parseAll(p_expr);
     initStream(currentStream);
+    initStream(ctx.rgbExtra);
     
     if ctx.volatile then
       -- 2.5.98.29 PtgAttrSemi
@@ -4450,7 +4416,30 @@ create or replace package body ExcelFmla is
     end if;
     
     putPtg(rootId);
-    --TODO: pass back generated names
+    
+    return utl_raw.concat(toBin(currentStream.sz)      -- cce
+                        , currentStream.bytes.content  -- rgce
+                        , toBin(ctx.rgbExtra.sz)       -- cb
+                        , ctx.rgbExtra.bytes.content   -- rgcb
+                        );
+  end;
+
+  -- 2.5.98.40 PtgExp
+  function getPtgExp (
+    p_cellRef  in varchar2
+  ) 
+  return raw
+  is
+    cell  cell_t := parseCellReference(p_cellRef);
+  begin
+    initStream(currentStream);
+    initStream(ctx.rgbExtra);
+    
+    putPtgType(PTG_EXP);
+    putBytes(uncheckedRw(cell.rw)); -- row
+    -- 2.5.98.42 PtgExtraCol
+    putExtra(uncheckedCol(cell.col)); -- col
+    
     return utl_raw.concat(toBin(currentStream.sz)      -- cce
                         , currentStream.bytes.content  -- rgce
                         , toBin(ctx.rgbExtra.sz)       -- cb

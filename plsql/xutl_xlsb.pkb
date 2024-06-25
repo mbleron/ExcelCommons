@@ -1,5 +1,53 @@
 create or replace package body xutl_xlsb is
- 
+/* ======================================================================================
+
+  MIT License
+
+  Copyright (c) 2018-2024 Marc Bleron
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+==========================================================================================
+    Change history :
+    Marc Bleron       2018-04-02     Creation
+    Marc Bleron       2018-08-23     Bug fix : no row returned if fetch_size (p_nrows)
+                                     is less than first row index
+    Marc Bleron       2018-09-02     Multi-sheet support
+    Marc Bleron       2020-03-01     Added cellNote attribute to ExcelTableCell
+    Marc Bleron       2021-04-05     Added generation routines for ExcelGen
+    Marc Bleron       2021-09-04     Added fWrap attribute
+    Marc Bleron       2022-02-15     Added ColInfo record
+    Marc Bleron       2022-08-06     Bug fix: BrtBeginWsView.fSelected set to 1 by default
+                                     Added CodeInfo.ixfe
+                                     Added RowHdr.ixfe, miyRw
+                                     Added BrtBeginWsView.fDspGrid, fDspRwCol
+                                     Added BrtTableStyleClient flags A, B, C, D
+                                     Added BrtMergeCell
+                                     Added BrtWsFmtInfo
+    Marc Bleron       2022-11-04     Added gradientFill
+    Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
+                                     and rich text support
+    Marc Bleron       2023-05-03     Added date style detection
+    Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
+    Marc Bleron       2024-05-01     Added sheet state, formula support
+========================================================================================== */
+
   -- Binary Record Types
   BRT_ROWHDR            constant pls_integer := 0; 
   BRT_CELLBLANK         constant pls_integer := 1;
@@ -47,7 +95,8 @@ create or replace package body xutl_xlsb is
   BRT_BEGINCOLINFOS     constant pls_integer := 390;
   BRT_ENDCOLINFOS       constant pls_integer := 391;
   BRT_EXTERNSHEET       constant pls_integer := 362;
-  BRT_ARRFMLA           constant pls_integer := 426;         
+  BRT_ARRFMLA           constant pls_integer := 426;
+  BRT_SHRFMLA           constant pls_integer := 427;
   BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
   BRT_BEGINFMTS         constant pls_integer := 615;
@@ -157,6 +206,8 @@ create or replace package body xutl_xlsb is
   type dateXfMap_t is table of ExcelTypes.CT_NumFmt index by pls_integer;
   
   type sheetMap_t is table of pls_integer index by varchar2(128);
+  type shrFmla_t is record (ptgExp raw(32767), pos integer);
+  type shrFmlaMap_t is table of shrFmla_t index by pls_integer; -- shared formula info indexed by shared index (si) 
   
   type Context_T is record (
     stream      Stream_T
@@ -173,7 +224,8 @@ create or replace package body xutl_xlsb is
   type Context_cache_T is table of Context_T index by pls_integer;
   ctx_cache  Context_cache_T;
   
-  sheetMap  sheetMap_t;
+  sheetMap    sheetMap_t;
+  shrFmlaMap  shrFmlaMap_t;
   
   debug_mode       boolean := false;
   MAX_STRING_SIZE  pls_integer;
@@ -312,7 +364,7 @@ create or replace package body xutl_xlsb is
     recordTypeLabelMap(BRT_BEGINSST) := 'BrtBeginSst';
     recordTypeLabelMap(BRT_BEGINCOMMENTS) := 'BrtBeginComments';
     recordTypeLabelMap(BRT_COMMENTTEXT) := 'BrtCommentText';
-    --recordTypeLabelMap(raw2int(RT_STRING)) := 'String';
+    recordTypeLabelMap(BRT_SHRFMLA) := 'BrtShrFmla';
   end;
 
   procedure set_debug (p_mode in boolean)
@@ -430,6 +482,7 @@ create or replace package body xutl_xlsb is
     stream  Stream_T;
   begin
     dbms_lob.createtemporary(stream.content, true);
+    stream.sz := 0;
     stream.buf_sz := 0;
     return stream;
   end;
@@ -507,7 +560,7 @@ create or replace package body xutl_xlsb is
     
     stream.hsize := stream.offset - rstart;
     stream.available := stream.rsize;
-    -- current record start
+    -- current record data start
     stream.rstart := stream.offset;
     --debug('RECORD INFO ['||to_char(stream.rstart,'FM0XXXXXXX')||']['||lpad(stream.rsize,6)||'] '||stream.rt);
   end;
@@ -613,18 +666,20 @@ create or replace package body xutl_xlsb is
           end if;
           stream.buf_sz := stream.buf_sz + len;
         else
-          -- flush
-          dbms_lob.writeappend(stream.content, stream.buf_sz, stream.buf);
+          flush_stream(stream);
           stream.buf := bytes;
           stream.buf_sz := len;
         end if;
+        stream.sz := stream.sz + len;
       end if;
     end;
   begin
     put(rt);
     put(rsize);
     if rec.is_lob then
+      flush_stream(stream);
       dbms_lob.copy(stream.content, rec.content, dbms_lob.getlength(rec.content), dbms_lob.getlength(stream.content) + 1);
+      stream.sz := stream.sz + dbms_lob.getlength(rec.content);
     else
       put(rec.content_raw);
     end if;
@@ -792,19 +847,21 @@ create or replace package body xutl_xlsb is
     end if;
   end;
   
-  procedure write_RfX (
-    rec       in out nocopy Record_T
-  , firstRow  in pls_integer
+  function make_RfX (
+    firstRow  in pls_integer
   , firstCol  in pls_integer
   , lastRow   in pls_integer
   , lastCol   in pls_integer 
   )
+  return raw
   is
   begin
-    write_record(rec, int2raw(firstRow));  -- rwFirst
-    write_record(rec, int2raw(lastRow));   -- rwLast
-    write_record(rec, int2raw(firstCol));  -- colFirst
-    write_record(rec, int2raw(lastCol));   -- colLast    
+    return utl_raw.concat(
+             int2raw(firstRow) -- rwFirst
+           , int2raw(lastRow)  -- rwLast
+           , int2raw(firstCol) -- colFirst
+           , int2raw(lastCol)  -- colLast 
+           );      
   end;
   
   function make_NumFmt (
@@ -1002,12 +1059,13 @@ create or replace package body xutl_xlsb is
     sheetId    in pls_integer
   , relId      in varchar2
   , sheetName  in varchar2
+  , state      in pls_integer
   )
   return Record_T
   is
     sh  Record_T := new_record(BRT_BUNDLESH);
   begin
-    write_record(sh, '00000000');        -- hsState : VISIBLE
+    write_record(sh, int2raw(state));    -- hsState
     write_record(sh, int2raw(sheetId));  -- iTabID
     write_XLWideString(sh, relId);       -- strRelID
     write_XLWideString(sh, sheetName);   -- strName
@@ -1032,7 +1090,8 @@ create or replace package body xutl_xlsb is
   end;
   
   function make_CalcProp (
-    calcId  in pls_integer
+    calcId    in pls_integer
+  , refStyle  in pls_integer
   )
   return Record_T
   is
@@ -1046,7 +1105,7 @@ create or replace package body xutl_xlsb is
     write_record(rec,
       bitVector(
         0 -- A: fFullCalcOnLoad
-      , 1 -- B: fRefA1
+      , refStyle -- B: fRefA1
       , 0 -- C: fIter
       , 1 -- D: fFullPrec
       , 0 -- E: fSomeUncalced 
@@ -1184,7 +1243,7 @@ create or replace package body xutl_xlsb is
   is
     rec  Record_T := new_record(BRT_BEGINAFILTER);
   begin
-    write_RfX(rec, firstRow, firstCol, lastRow, lastCol);
+    write_record(rec, make_RfX(firstRow, firstCol, lastRow, lastCol));
     return rec;
   end;
   
@@ -1213,7 +1272,7 @@ create or replace package body xutl_xlsb is
   is
     rec  Record_T := new_record(BRT_BEGINLIST);
   begin
-    write_RfX(rec, firstRow, firstCol, lastRow, lastCol);  -- rfxList
+    write_record(rec, make_RfX(firstRow, firstCol, lastRow, lastCol));  -- rfxList
     write_record(rec, '00000000');        -- lt : LTRANGE
     write_record(rec, int2raw(tableId));  -- idList
     write_record(rec, int2raw(case when showHeader then 1 else 0 end));  -- crwHeader
@@ -1370,8 +1429,8 @@ create or replace package body xutl_xlsb is
   )
   return record_t
   is
-    nm   ExcelTypes.CT_DefinedName := names(idx);
-    rec  record_t := new_record(BRT_NAME);
+    nm        ExcelTypes.CT_DefinedName := names(idx);
+    rec       record_t := new_record(BRT_NAME);
     newNames  ExcelTypes.CT_DefinedNames;
   begin
     write_record(rec
@@ -1416,7 +1475,12 @@ create or replace package body xutl_xlsb is
       write_record(rec, 'FFFFFFFF');
     end if;
     write_XLWideString(rec, nm.name); -- name
-    write_record(rec, ExcelFmla.parseBinary(nm.formula, ExcelFmla.EXC_FMLATYPE_NAME, nm.cellRef));
+    
+    -- set current sheet to resolve unscoped cell references in the formula,
+    -- an error will be raised during parsing if an unscoped cell reference is found in a workbook-level name
+    ExcelFmla.setCurrentSheet(nm.scope);
+    
+    write_record(rec, ExcelFmla.parseBinary(nm.formula, ExcelFmla.FMLATYPE_NAME, nm.cellRef, nm.refStyle));
     -- comment
     if nm.comment is not null then
       write_XLWideString(rec, nm.comment);
@@ -1440,6 +1504,46 @@ create or replace package body xutl_xlsb is
     
     return rec;
 
+  end;
+  
+  function make_Fmla (
+    colIndex  in pls_integer
+  , styleRef  in pls_integer
+  , expr      in varchar2
+  , si        in pls_integer
+  , cellRef   in varchar2
+  , refStyle  in pls_integer
+  )
+  return Record_T
+  is
+    rec  record_t := make_Cell(BRT_FMLAERROR, colIndex, styleRef);
+  begin
+    write_record(rec, FT_ERR_NA);
+    write_record(rec, bitVector(b1 => 1)); -- GrbitFmla.fAlwaysCalc
+    write_record(rec, '00'); -- unused
+    
+    if si is null then
+      write_record(rec, ExcelFmla.parseBinary(expr, ExcelFmla.FMLATYPE_CELL, cellRef, refStyle));
+    else
+      write_record(rec, shrFmlaMap(si).ptgExp);
+    end if;
+    
+    return rec;
+  end;
+
+  -- 2.4.785 BrtShrFmla
+  function make_ShrFmla (
+    expr      in varchar2
+  , cellRef   in varchar2
+  , refStyle  in pls_integer
+  )
+  return Record_T
+  is
+    rec  record_t := new_record(BRT_SHRFMLA);
+  begin
+    write_record(rec, utl_raw.copies('00',16)); -- rfx placeholder    
+    write_record(rec, ExcelFmla.parseBinary(expr, ExcelFmla.FMLATYPE_SHARED, cellRef, refStyle));
+    return rec;
   end;
   
   procedure put_RowHdr (
@@ -1518,7 +1622,8 @@ create or replace package body xutl_xlsb is
   end;
   
   procedure put_defaultBookViews (
-    stream  in out nocopy stream_t
+    stream      in out nocopy stream_t
+  , firstSheet  in pls_integer
   )
   is
     rec  Record_T := new_record(BRT_BOOKVIEW);
@@ -1530,8 +1635,8 @@ create or replace package body xutl_xlsb is
     write_record(rec, '00000000');  -- dxWn
     write_record(rec, '00000000');  -- dyWn
     write_record(rec, '58020000');  -- iTabRatio : 600
-    write_record(rec, '00000000');  -- itabFirst
-    write_record(rec, '00000000');  -- itabCur
+    write_record(rec, int2raw(firstSheet));  -- itabFirst
+    write_record(rec, int2raw(firstSheet));  -- itabCur
     write_record(rec, 
                  bitVector(
                    0  -- fHidden 
@@ -1551,12 +1656,22 @@ create or replace package body xutl_xlsb is
   , sheetId    in pls_integer
   , relId      in varchar2
   , sheetName  in varchar2
+  , state      in pls_integer
   )
   is
     sheetIdx  pls_integer := sheetMap.count; -- 0-based sheet index
   begin
     sheetMap(upper(sheetName)) := sheetIdx;
-    put_record(stream, make_BundleSh(sheetId, relId, sheetName));
+    put_record(stream, make_BundleSh(sheetId, relId, sheetName, state));
+  end;
+
+  procedure put_BeginSheet (
+    stream  in out nocopy stream_t
+  )
+  is
+  begin
+    put_simple_record(stream, BRT_BEGINSHEET);
+    shrFmlaMap.delete;
   end;
   
   procedure put_BeginList (
@@ -1636,12 +1751,13 @@ create or replace package body xutl_xlsb is
   end;
   
   procedure put_CalcProp (
-    stream  in out nocopy stream_t
-  , calcId  in pls_integer
+    stream    in out nocopy stream_t
+  , calcId    in pls_integer
+  , refStyle  in pls_integer
   )
   is
   begin
-    put_record(stream, make_CalcProp(calcId));
+    put_record(stream, make_CalcProp(calcId, refStyle));
   end;
 
   procedure put_WsProp (
@@ -1804,7 +1920,7 @@ create or replace package body xutl_xlsb is
     idx := names.first;
     while idx is not null loop
       recArray.extend;
-      recArray(idx) := make_Name(names, idx); --TODO: make_Name(names[in out], idx)? 
+      recArray(idx) := make_Name(names, idx);
       idx := names.next(idx);
     end loop;
     
@@ -1830,6 +1946,53 @@ create or replace package body xutl_xlsb is
       put_record(stream, recArray(i));
     end loop;
     
+  end;
+  
+  procedure put_CellFmla (
+    stream    in out nocopy stream_t
+  , colIndex  in pls_integer
+  , styleRef  in pls_integer default 0
+  , expr      in varchar2
+  , shared    in boolean
+  , si        in pls_integer default null
+  , cellRef   in varchar2 default null
+  , refStyle  in pls_integer default null
+  )
+  is
+    makeShrFmla  boolean := false;
+  begin
+    
+    if shared then
+      if not shrFmlaMap.exists(si) then
+        shrFmlaMap(si).ptgExp := ExcelFmla.getPtgExp(cellRef);
+        makeShrFmla := true;
+      end if;
+      put_record(stream, make_Fmla(colIndex, styleRef, expr, si, cellRef, refStyle));
+      if makeShrFmla then
+        -- save a pointer to the beginning of this BrtShrFmla record so that we can set its rfx structure later
+        -- when the range is known
+        shrFmlaMap(si).pos := stream.sz + 1;
+        put_record(stream, make_ShrFmla(expr, cellRef, refStyle));
+      end if;
+    else
+      put_record(stream, make_Fmla(colIndex, styleRef, expr, si, cellRef, refStyle));
+    end if;
+  end;
+
+  procedure put_ShrFmlaRfX (
+    stream    in out nocopy stream_t
+  , si        in pls_integer
+  , firstRow  in pls_integer
+  , firstCol  in pls_integer
+  , lastRow   in pls_integer
+  , lastCol   in pls_integer  
+  )
+  is
+  begin
+    seek(stream, shrFmlaMap(si).pos);
+    next_record(stream);
+    expect(stream, BRT_SHRFMLA);
+    dbms_lob.write(stream.content, 16, stream.offset, make_RfX(firstRow, firstCol, lastRow, lastCol));
   end;
 
   -- convert a 0-based column number to base26 string
@@ -2599,10 +2762,13 @@ create or replace package body xutl_xlsb is
     readCount   pls_integer;
     cce         pls_integer;
     cb          pls_integer;
+    int1        pls_integer;
+    int2        pls_integer;
     
     rgceOffset  pls_integer;
     
-    type ptg_t is record (id pls_integer, name varchar2(128), sz pls_integer, hasType boolean);
+    rc          sys_refcursor;
+    type ptg_t is record (id pls_integer, name varchar2(128), sz pls_integer, hasType pls_integer);
     type ptgList_t is table of ptg_t index by pls_integer;
     
     type ptgExtraList_t is table of varchar2(128);
@@ -2619,19 +2785,20 @@ create or replace package body xutl_xlsb is
     
   begin
     
-    for r in ( select utl_raw.cast_to_binary_integer(utl_raw.concat(byte1,byte2)) as ptg, ptg_name, ptg_size, has_type from xlsb_ptg ) loop
-      ptgList(r.ptg).id := r.ptg;
-      ptgList(r.ptg).name := r.ptg_name;
-      ptgList(r.ptg).sz := r.ptg_size;
-      ptgList(r.ptg).hasType := ( r.has_type = 'Y' ); 
+    open rc for 'select utl_raw.cast_to_binary_integer(utl_raw.concat(byte1,byte2)), ptg_name, ptg_size, decode(has_type,''Y'',1,0) from xlsb_ptg';
+    loop
+      fetch rc into ptg.id, ptg.name, ptg.sz, ptg.hasType;
+      exit when rc%notfound;
+      ptgList(ptg.id) := ptg; 
     end loop;
-  
+    close rc;
+    
     loadRecordTypeLabels;
     stream := open_stream(file);
 
     while stream.offset < stream.sz loop
       next_record(stream);   
-      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA,BRT_NAME);
+      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA,BRT_NAME,BRT_SHRFMLA);
       
       debug('---------------------------');
       debug(recordTypeLabelMap(stream.rt));
@@ -2641,6 +2808,10 @@ create or replace package body xutl_xlsb is
 
         skip(stream, 16); -- rfx
         skip(stream, 1); -- A + unused
+        
+      elsif stream.rt = BRT_SHRFMLA then
+        
+        skip(stream, 16); -- rfx
         
       elsif stream.rt = BRT_NAME then
         
@@ -2709,7 +2880,7 @@ create or replace package body xutl_xlsb is
           extras(extras.last) := ptg.name;
         end if;
         
-        if ptg.hasType then
+        if ptg.hasType = 1 then
           -- select bits 5 and 6, and shift right 5
           ptgType := raw2int(utl_raw.bit_and(byte1, '60'))/32;
         else
@@ -2777,6 +2948,31 @@ create or replace package body xutl_xlsb is
             --read PtgExtraCol
             debug('[PtgExtraCol]');
             debug('  '||base26encode(read_int32(stream)));
+            
+          when 'PtgArray' then
+            debug('[PtgExtraArray]');
+            int1 := read_int32(stream);
+            int2 := read_int32(stream);
+            debug('  rows='||int1);
+            debug('  cols='||int2);
+            for j in 1 .. int1 * int2 loop
+              raw1 := read_bytes(stream, 1);
+              case raw1
+              when '00' then
+                debug('  SerNum');
+                skip(stream, 8);
+              when '01' then
+                debug('  SerStr');
+                int1 := read_int16(stream);
+                skip(stream, int1 * 2);
+              when '02' then
+                debug('  SerBool');
+                skip(stream, 1);
+              when '04' then
+                debug('  SerErr');
+                skip(stream, 4);
+              end case;
+            end loop;
           
           end case;
         

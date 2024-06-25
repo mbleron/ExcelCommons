@@ -138,18 +138,18 @@ create or replace package ExcelTypes is
   );
   
   type CT_Sheets is table of CT_SheetBase;
-  --type CT_SheetMap is table of CT_SheetBase index by varchar2(128);
   
   type CT_DefinedName is record (
-    idx      pls_integer
-  , name     varchar2(255 char)
-  , scope    varchar2(128)
-  , formula  varchar2(32767)
-  , cellRef  varchar2(10)
-  , comment  varchar2(255 char)
-  , hidden   boolean
+    idx             pls_integer
+  , name            varchar2(255 char)
+  , scope           varchar2(128)
+  , formula         varchar2(32767)
+  , cellRef         varchar2(10)
+  , refStyle        pls_integer
+  , comment         varchar2(255 char)
+  , hidden          boolean
   , futureFunction  boolean
-  , builtIn  boolean
+  , builtIn         boolean
   );
   
   type CT_DefinedNames is table of CT_DefinedName;

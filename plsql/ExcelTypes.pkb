@@ -1,6 +1,41 @@
 create or replace package body ExcelTypes is
+/* ======================================================================================
 
-  NAMED_COLORS          constant varchar2(4000) := 
+  MIT License
+
+  Copyright (c) 2021-2024 Marc Bleron
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+=========================================================================================
+    Change history :
+    Marc Bleron       2021-05-23     Creation
+    Marc Bleron       2021-09-04     Added wrapText attribute, and font underline
+    Marc Bleron       2022-09-03     Added CSS features
+    Marc Bleron       2022-11-04     Added gradientFill
+    Marc Bleron       2023-02-15     Added font vertical alignment (super/sub-script)
+                                     and rich text support
+    Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
+                                     Added font strikethrough, text orientation, indent
+====================================================================================== */
+
+  NAMED_COLORS  constant varchar2(4000) := 
   'aliceblue:F0F8FF;antiquewhite:FAEBD7;aqua:00FFFF;aquamarine:7FFFD4;azure:F0FFFF;beige:F5F5DC;bisque:FFE4C4;black:000000;blanchedalmond:FFEBCD;' ||
   'blue:0000FF;blueviolet:8A2BE2;brown:A52A2A;burlywood:DEB887;cadetblue:5F9EA0;chartreuse:7FFF00;chocolate:D2691E;coral:FF7F50;cornflowerblue:6495ED;' ||
   'cornsilk:FFF8DC;crimson:DC143C;cyan:00FFFF;darkblue:00008B;darkcyan:008B8B;darkgoldenrod:B8860B;darkgray:A9A9A9;darkgreen:006400;darkgrey:A9A9A9;' ||
@@ -39,7 +74,7 @@ AgNSMwQDWDMiAn8zA4UzAgPLMwEC1DMC1zMD2TMBA94zIQO2TUkDxJ87A42kcgMNpgIDIKYJAyymEwNg
 tKhVAyapCQNHqbgDKaoWAkOqBEyqswEEpNdbCANJ+LYDLvoBA2v6BAPa+iUDB/sLAxj7BAIe+wIp+wI3+wI9+wI/+wJC+wJF+wOy+yADPv0RA5D9AQPI/ScD/P0zAjL+
 A0X+AwJT/gJY/gJn/gNs/gMCdf4D/f4DA1//AQO//wIDyP8BA9D/AQPY/wED3f8CA+f/GA==';
 
-  SHEET_QUOTABLE_CHARS        constant varchar2(32767) :=
+  SHEET_QUOTABLE_CHARS  constant varchar2(32767) :=
 'AwEAJQMoAAEDKwACAzsAAwJAAAJeAAJgAAN7ACUDogABA6UAAQKpAAOrAAECrgACuwADeAMBA34DBQKHAwKLAwKNAwKiAwMkBQwDVwUBA1oFBgOIBQgCvgUCwAUCwwUC
 xgUDyAUHA+sFBAPzBQwDBAYBAwkGAQMMBgEDGwYDAiAGAl8GA2oGAwLUBgMABw4DSwcBA7IHDQP3BwIE+wcFAQM6CQEDTgkBA1UJAgNkCQECcAkDcwkHAoAJAoQJA40J
 AQORCQECqQkCsQkDswkCA7oJAQPFCQEDyQkBA88JBwPYCQMC3gkD5AkBA/sJBQIECgMLCgMDEQoBAikKAjEKAjQKAjcKAzoKAQI9CgNDCgMDSQoBA04KAgNSCgYCXQoD
@@ -58,7 +93,7 @@ MQO4MQcD5DELAh8yA0QyCwL/MgO2TQkDxJ87A42kAgPHpDgDDaYCAyymEwNgpgEDc6YIAn6mA5imZwON
 pQEDpNdbAy76AQNr+gQD2volAwf7CwMY+wQCN/sCPfsCP/sCQvsCRfsDsvsgAz79EQOQ/QEDyP0nA/79AQMQ/g8DJ/4IAjL+A0X+AwJT/gJY/gJn/gNs/gMCdf4D/f4B
 AgD/A1//AQO//wIDyP8BA9D/AQPY/wED3f8CAuf/A+//CQP+/wE=';
   
-  NAME_START_CHARS            constant varchar2(32767) :=
+  NAME_START_CHARS  constant varchar2(32767) :=
 'A0EAGQJcAAJfAANhABkCoQACpAADpwABAqoAAq0AA68ACwS8APwBA7sCBgLHAgPJAgICzQID0AIBA9gCAwLdAgPgAgQC7gIDcAMDA3YDAQN6AwMChgMDiAMCAowDA44D
 EwOjA1ID9wOKA4oEmQMxBSUCWQUDYQUmA9AFGgPwBQIDIQYpA24GAQNxBmIC1QYD5QYBA+4GAQP6BgIC/wYCEAcDEgcdA00HWAKxBwPKByAD9AcBAvoHAwQJNQI9CQJQ
 CQNYCQkDcQkBA3sJBAOFCQcDjwkBA5MJFQOqCQYCsgkDtgkDAr0JAs4JA9wJAQPfCQID8AkBAwUKBQMPCgEDEwoVAyoKBgMyCgEDNQoBAzgKAQNZCgMCXgoDcgoCA4UK
@@ -78,7 +113,7 @@ A80zBgPVMwEC2DMD2zMCBAA0tRkEAE7DUQQAoIwEBAClDAEDEKYPAyqmAQNAph8DYqYMA4CmFwMip2UD
 AKooA0CqAgNEqgcEAKyjKwQA4EgYBAD5LQEDMPo6A3D6aQMA+wYDE/sEAh37Ax/7CQMq+wwDOPsEAj77A0D7AQND+wEDRvtrBNP7agEDUP0/A5L9NQPw/QsDMP4BAzP+
 EQNJ/gkDVP4DA1n+DQNo/gMDcP4EA3b+hgMB/10DYf9dA8L/BQPK/wUD0v8FA9r/AgPg/wY=';
 
-  NAME_CHARS                  constant varchar2(32767) :=
+  NAME_CHARS  constant varchar2(32767) :=
 'Ai4AAzAACQI/AANBABkCXAACXwADYQAZAqEAAqQAA6cAAQKqAAKtAAOvAAsEvAC7AgN6AwMDhAMCA4gDAgKMAwOOAxMEowOAAQMxBSUCWQUDYQUmA5EFLAK/BQPBBQED
 xAUBAscFA9AFGgPwBQIDAAYDAwYGAgILBgMOBgwCHwYDIQY9A2AGCQNuBmUD1QYqAw8HOwNNB2QDwAc2AvoHAwEJOAM8CREDUAkEA1gJCwNmCQkDcQkBA3sJBAOBCQID
 hQkHA48JAQOTCRUDqgkGArIJA7YJAwO8CQgDxwkBA8sJAwLXCQPcCQED3wkEA+YJFAMBCgIDBQoFAw8KAQMTChUDKgoGAzIKAQM1CgEDOAoBAjwKAz4KBANHCgEDSwoC

@@ -45,6 +45,7 @@ create or replace package xutl_xlsb is
                                      and rich text support
     Marc Bleron       2023-05-03     Added date style detection
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
+    Marc Bleron       2024-05-01     Added sheet state, formula support
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -123,7 +124,8 @@ create or replace package xutl_xlsb is
   );
   
   procedure put_defaultBookViews (
-    stream  in out nocopy stream_t
+    stream      in out nocopy stream_t
+  , firstSheet  in pls_integer
   );
   
   procedure put_BundleSh (
@@ -131,6 +133,11 @@ create or replace package xutl_xlsb is
   , sheetId    in pls_integer
   , relId      in varchar2
   , sheetName  in varchar2
+  , state      in pls_integer
+  );
+
+  procedure put_BeginSheet (
+    stream  in out nocopy stream_t
   );
   
   procedure put_BeginList (
@@ -181,8 +188,9 @@ create or replace package xutl_xlsb is
   );
   
   procedure put_CalcProp (
-    stream  in out nocopy stream_t
-  , calcId  in pls_integer
+    stream    in out nocopy stream_t
+  , calcId    in pls_integer
+  , refStyle  in pls_integer
   );
 
   procedure put_WsProp (
@@ -265,6 +273,26 @@ create or replace package xutl_xlsb is
     stream  in out nocopy stream_t
   , names   in out nocopy ExcelTypes.CT_DefinedNames
   );
+
+  procedure put_CellFmla (
+    stream    in out nocopy stream_t
+  , colIndex  in pls_integer
+  , styleRef  in pls_integer default 0
+  , expr      in varchar2
+  , shared    in boolean default null
+  , si        in pls_integer default null
+  , cellRef   in varchar2 default null
+  , refStyle  in pls_integer default null
+  );
+
+  procedure put_ShrFmlaRfX (
+    stream    in out nocopy stream_t
+  , si        in pls_integer
+  , firstRow  in pls_integer
+  , firstCol  in pls_integer
+  , lastRow   in pls_integer
+  , lastCol   in pls_integer  
+  );
     
   function new_context (
     p_sst_part  in blob
@@ -296,8 +324,8 @@ create or replace package xutl_xlsb is
   )
   return ExcelTableCellList;
   
-  procedure read_all (file in blob);
-  procedure read_formulas (file in blob);
+  --procedure read_all (file in blob);
+  --procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /
