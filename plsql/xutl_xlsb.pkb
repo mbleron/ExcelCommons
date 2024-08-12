@@ -46,6 +46,7 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2023-05-03     Added date style detection
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
     Marc Bleron       2024-05-01     Added sheet state, formula support
+    Marc Bleron       2024-07-03     Themed color handling in make_BrtColor  
 ========================================================================================== */
 
   -- Binary Record Types
@@ -328,15 +329,28 @@ create or replace package body xutl_xlsb is
   )
   return raw 
   is
-    rColorCode  raw(4) := hextoraw(colorCode);
+    rColorCode  raw(4);
   begin
     if colorCode is not null then
-      return utl_raw.concat( '05'    -- fValidRGB = 1, xColorType = 2
-                           , '00'    -- index (ignored when xColorType = 2)
-                           , '0000'  -- nTintAndShade (0 = no change)
-                           , utl_raw.substr(rColorCode, 2)     -- bRed, bGreen, bBlue
-                           , utl_raw.substr(rColorCode, 1, 1)  -- bAlpha
-                           );
+      if colorCode like 'theme:%' then
+        return utl_raw.concat( bitVector(0     -- fValidRGB = 0
+                                       , 1, 1  -- xColorType = 3
+                                       )
+                             , int2raw(to_number(regexp_substr(colorCode,'\d+$')), 1)   -- index
+                             , '0000'         -- nTintAndShade
+                             , '00000000'     -- bRed, bGreen, bBlue, bAlpha
+                             );        
+      else
+        rColorCode := hextoraw(colorCode);
+        return utl_raw.concat( bitVector(1     -- fValidRGB = 1
+                                       , 0, 1  -- xColorType = 2
+                                       )
+                             , '00'    -- index (ignored when xColorType = 2)
+                             , '0000'  -- nTintAndShade (0 = no change)
+                             , utl_raw.substr(rColorCode, 2)     -- bRed, bGreen, bBlue
+                             , utl_raw.substr(rColorCode, 1, 1)  -- bAlpha
+                             );
+      end if;
     else
       return utl_raw.concat( '00'        -- fValidRGB = 0, xColorType = 0
                            , '00'        -- index
