@@ -34,6 +34,7 @@ create or replace package ExcelTypes is
     Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
                                      Added font strikethrough, text orientation, indent
     Marc Bleron       2024-03-13     Added definedName structure
+    Marc Bleron       2024-08-13     Added dataValidation structure
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -173,6 +174,36 @@ create or replace package ExcelTypes is
   , xtiMap    xtiMap_t
   );
   
+  subtype ST_Ref is varchar2(128);
+  type ST_Sqref is table of ST_Ref;
+  
+  type cellRange_t is record (
+    value     ST_Ref
+  , rwFirst   pls_integer
+  , rwLast    pls_integer
+  , colFirst  pls_integer
+  , colLast   pls_integer
+  );
+  
+  type cellRangeList_t is table of cellRange_t;
+  
+  type CT_DataValidation is record (
+    allowBlank        boolean
+  , error             varchar2(225 char)
+  , errorStyle        varchar2(128)
+  , errorTitle        varchar2(32 char)
+  , operator          varchar2(128)
+  , prompt            varchar2(255 char)
+  , promptTitle       varchar2(32 char)
+  , showDropDown      boolean
+  , showErrorMessage  boolean
+  , showInputMessage  boolean
+  , sqref             cellRangeList_t
+  , type              varchar2(128)
+  );
+  
+  type CT_DataValidations is table of CT_DataValidation;
+  
   type colorMap_t is table of varchar2(6) index by varchar2(20);
   function getColorMap return colorMap_t;
   
@@ -183,6 +214,9 @@ create or replace package ExcelTypes is
   function isValidHorizontalAlignment (p_hAlignment in varchar2) return boolean;
   function isValidVerticalAlignment (p_vAlignment in varchar2) return boolean;
   function isValidFontVerticalAlignment (p_fontVertAlign in varchar2) return boolean;
+  function isValidDataValidationType (p_dataValType in varchar2) return boolean;
+  function isValidDataValidationOperator (p_dataValOp in varchar2) return boolean;
+  function isValidDataValidationErrStyle (p_dataValErrStyle in varchar2) return boolean;
   
   function makeRgbColor (r in uint8, g in uint8, b in uint8, a in number default null) return varchar2;
   function validateColor (colorSpec in varchar2) return varchar2;
@@ -192,6 +226,9 @@ create or replace package ExcelTypes is
   function getHorizontalAlignmentId (p_hAlignment in varchar2) return pls_integer;
   function getVerticalAlignmentId (p_vAlignment in varchar2) return pls_integer;
   function getFontVerticalAlignmentId (p_fontVertAlign in varchar2) return pls_integer;
+  function getDataValidationTypeId (p_dataValType in varchar2) return pls_integer;
+  function getDataValidationOpId (p_dataValOp in varchar2) return pls_integer;
+  function getDataValidationErrStyleId (p_dataValErrStyle in varchar2) return pls_integer;
 
   function makeNumFmt (
     numFmtId in pls_integer
