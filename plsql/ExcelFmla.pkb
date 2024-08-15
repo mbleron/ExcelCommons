@@ -16,6 +16,7 @@ create or replace package body ExcelFmla is
 =========================================================================================
     Change history :
     Marc Bleron       2023-10-01     Creation
+    Marc Bleron       2024-08-15     Added Excel IMAGE function
 ====================================================================================== */
 
   PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
@@ -250,19 +251,19 @@ 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
-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
-4fofJXT+TZoQAAA=';
+K+313TuDOImSKTAdhKlWvZ7796jhHTUQ4967QkeFE+AakKEX6Pr15HokqhAiPXBbJiqXBX90he3YTrRQQFCO6UaHcrIUHokvrw6iBE6E86eABUTWvozcF2ZAvUJW6t+D
+R2EQC2kv9+4B4LrgnX0zhTgRXWu/EiSTIbmE1o8GnpWFcQz0KZ9NwoCjH/eV7KDS8WjfNGouCtZ8z3OkMJJFGwpSSew/3/J0AaK+zbn+5MYp4NNbKVQANa+ecqvIlBBG
+2P8JT7unhfm1P22v1zan90qhmOecu6gmuNrwyr6fqjtFlP+EYNxweZ23AyD/uW8v8KCQlicxN2KXGlEjj3sH4MrPjEbV/OSJS8edag47T407UQIZeyNl7DZgqbTLjht8
+tQ15dlXgunbozB5w/byPUMtsUT+Oy3GWICcCrWXUOxIA7N0+aduSw6O3X3SbsbW2wOBMvkbqcSvKa4ngEwD5zwjBkpyMZoVk7yGzE0C95bV/RsBA+4Z/CSSxy6wWkukR
+R3SDz23f2C+7SsdG2qryVuK0BAA/7UynqAkpUpdkOZSfoTYeSba1prIjks/9WHITBe6o5PZA6T1sMTuQ7M0hFAq8fRZFwfGhis7VmFL0b/azDUrgNrf6JocCgzq3+KnJ
+iUDpNpLEUtlbghEcnHaeQj1KoIQHicZi2S22A+zWGcZeleUdZGGiqspwK0E1dM8eKX0zRT/rONNGyfupcLc6rGTo/g2vfYZvr4Uaqla4WRDuDpZB3Pb2TirsqBMXreMY
+Q6k9RM5lnRIGDrmLbp52mHf7fsjrQPurRBYJdMf8kRC4ME5Tt3voll/3Qw0I4OT3UVSibnE/HTXd75lG5+fe+UwzTEyz8H0QrlE+RmHEO/1mSPloWLT84SAefMk07xpW
+8A8H1BvWgvzHJElAYq/xU7cW89p+gOp24mD+U1/HWrVMPhmOsJfllbR55mCpDuQvSZQ5Ud/9wvdp6CdTGkgTAKbxHw7a7D/gJ10DD1vUmvpuNuD8RySIDT93XgNJAv9z
+5zUUgbkCJwLPZEbM5RU+LyFlL9hYkvVfRrTHDwoq79g08nNEAymwescfIo9TAy22qUZaNfvaXkx2tg18zpRMl+IMv93nkRuSjvjEcJA9G74Bd9/2yT5g9rRncuD81fJB
+n/umz40VFgjoBezF7sFBZpVlzdLNwvgJFMMglviPNwCiWo0fSBMnMH8eP47AbLvO4dcDIiOQmX1GjsAp7XK3Xe2eIF8GSbfaPUmSDCWgco//aDCr8vOUhqH9tM8DiNSF
+Pv74Ffg3z/AW6eZuP6lhyzvh6dKKluf0OjNEbgR/cbQFzNRQ1aZWAdv9fl1HMyQH08HHlXFMPUEFzWW5uzH6JFaL9kOe2xHhJLQ3vrnVPb+BxkoAsviurx2LQ9zDSKcD
+MSQ43S6cNfhES/sOSOG93nhvhrH7B36/u8z1PmdhYN7xTQgAey7cQN0r/oURsWd8Ci/K/A9Bmg1VtRha6tmN0S074Bz7QEUHg0DkfdPsUCc4su4Ub2glkDvHhnrbXE1W
+ULbcP98ZDEGJyebC9T9Tr1jptBAAAA==';
   
   subtype nodeHandle is pls_integer;
   type nodeHandleList_t is table of nodeHandle;
