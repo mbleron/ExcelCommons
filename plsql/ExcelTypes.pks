@@ -199,7 +199,13 @@ create or replace package ExcelTypes is
   , showErrorMessage  boolean
   , showInputMessage  boolean
   , sqref             cellRangeList_t
+  , activeCellRef     varchar2(10)
   , type              varchar2(128)
+  , fmla1             varchar2(8192)
+  , fmla2             varchar2(8192)
+  , refStyle1         pls_integer
+  , refStyle2         pls_integer
+  , internalCellRef   varchar2(10)
   );
   
   type CT_DataValidations is table of CT_DataValidation;

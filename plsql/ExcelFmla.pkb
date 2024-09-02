@@ -16,6 +16,7 @@ create or replace package body ExcelFmla is
 =========================================================================================
     Change history :
     Marc Bleron       2023-10-01     Creation
+    Marc Bleron       2024-08-16     Data validation feature
 ====================================================================================== */
 
   PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
@@ -225,7 +226,6 @@ create or replace package body ExcelFmla is
   --enum XclFormulaType
   FMLATYPE_MATRIX   constant pls_integer := 1;
   FMLATYPE_CONDFMT  constant pls_integer := 3;
-  FMLATYPE_DATAVAL  constant pls_integer := 4;
   --FMLATYPE_CHART    constant pls_integer := 6;
   --FMLATYPE_LISTVAL  constant pls_integer := 9;
 
@@ -388,6 +388,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
   type config_t is record (
     fmlaType       pls_integer  -- FMLATYPE_*
   , fmlaClassType  pls_integer  -- CLASSTYPE_*
+  , valType        boolean      -- forced root VALUE_TYPE
   );
   
   type byteArray_t is record (content raw(32767), lobContent blob);
@@ -416,6 +417,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
   -- This collection is meant to be sent back to the calling context for merging, then deleted
   , definedNames  ExcelTypes.CT_DefinedNames
   , treeRootId  nodeHandle
+  , dvCellOrigin  cell_t
   );
   
   ctx  context_t; 
@@ -518,7 +520,10 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     -- offset parameter MUST be less than or equal to ( stream.sz - sizeof(bytes) + 1 )
     if stream.isLob then
       dbms_lob.write(stream.bytes.lobContent, len, nvl(offset, stream.sz + 1), bytes);
-      stream.sz := stream.sz + len;
+      -- increment size only when appending
+      if offset is null then
+        stream.sz := stream.sz + len;
+      end if;
     else
       if stream.sz + len > 32767 then
         -- switch to lob storage
@@ -533,7 +538,10 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
         else
           stream.bytes.content := utl_raw.overlay(bytes, stream.bytes.content, nvl(offset, stream.sz + 1));
         end if;
-        stream.sz := stream.sz + len;
+        -- increment size only when appending
+        if offset is null then
+          stream.sz := stream.sz + len;
+        end if;
       end if;
     end if;
   end;
@@ -1177,9 +1185,10 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     ctx.cell := parseCellReference(cellRef);
   end;
 
-  procedure setFormulaType (fmlaType in pls_integer) is
+  procedure setFormulaType (fmlaType in pls_integer, valType in boolean default null) is
   begin
     ctx.config.fmlaType := fmlaType;
+    ctx.config.valType := valType;
   end;
   
   function getPrevNonDigit return varchar2 is
@@ -1403,7 +1412,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     end if;    
   end;
   
-  procedure adjustColumn (col in out nocopy column_t)
+  procedure normalizeColumnOffset (col in out nocopy column_t)
   is
   begin
     if col.value < 0 then
@@ -1415,7 +1424,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     col.alphaValue := base26Encode(col.value);    
   end;
 
-  procedure adjustRow (rw in out nocopy row_t)
+  procedure normalizeRowOffset (rw in out nocopy row_t)
   is
   begin
     if rw.value < 0 then
@@ -1426,19 +1435,62 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     rw.value := rw.value + 1;
   end;
 
-  procedure applyCellOffset (
+  procedure normalizeColumn (col in out nocopy column_t)
+  is
+  begin
+    if col.value <= 0 then
+      col.value := col.value + MAX_COL_NUMBER;
+    elsif col.value > MAX_COL_NUMBER then
+      col.value := col.value - MAX_COL_NUMBER;
+    end if;
+    col.alphaValue := base26Encode(col.value);    
+  end;
+
+  procedure normalizeRow (rw in out nocopy row_t)
+  is
+  begin
+    if rw.value <= 0 then
+      rw.value := rw.value + MAX_ROW_NUMBER;
+    elsif rw.value > MAX_ROW_NUMBER then
+      rw.value := rw.value - MAX_ROW_NUMBER;
+    end if;
+  end;
+
+  procedure toCellOffset (
+    cell       in out nocopy cell_t
+  , origin     in cell_t
+  , normalize  in boolean default true
+  )
+  is
+  begin
+    if not cell.col.isAbsolute then
+      cell.col.value := cell.col.value - origin.col.value;
+      if normalize then
+        normalizeColumnOffset(cell.col);
+      end if;
+    end if;
+    if not cell.rw.isAbsolute then
+      cell.rw.value := cell.rw.value - origin.rw.value;
+      if normalize then
+        normalizeRowOffset(cell.rw);
+      end if;
+    end if;
+  end;
+  
+  -- resolves relative offsets to cell references based on a point of origin
+  procedure resolveOffset (
     cell    in out nocopy cell_t
   , origin  in cell_t
   )
   is
   begin
     if not cell.col.isAbsolute then
-      cell.col.value := cell.col.value - origin.col.value;
-      adjustColumn(cell.col);
+      cell.col.value := origin.col.value + cell.col.value;
+      normalizeColumn(cell.col);
     end if;
     if not cell.rw.isAbsolute then
-      cell.rw.value := cell.rw.value - origin.rw.value;
-      adjustRow(cell.rw);
+      cell.rw.value := origin.rw.value + cell.rw.value;
+      normalizeRow(cell.rw);
     end if;
   end;
   
@@ -1534,12 +1586,31 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     ptgType   pls_integer;
     localRef  area3d_t := refValue;
   begin
-    if ctx.binary
-       and ctx.config.fmlaType = FMLATYPE_SHARED
-       and not(localRef.area.firstCell.col.isAbsolute and localRef.area.firstCell.rw.isAbsolute)
+    if not(localRef.area.firstCell.col.isAbsolute and localRef.area.firstCell.rw.isAbsolute)
+       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
+             or ctx.config.fmlaType = FMLATYPE_DATAVAL ) 
     then
       ptgType := PTG_REFN_R;
-      applyCellOffset(localRef.area.firstCell, ctx.cell);
+      
+      if ctx.config.fmlaType = FMLATYPE_DATAVAL and not ctx.binary then
+        /* **************
+        In XLSX format, the storage of relative references in data validation formulas is quite convoluted.       
+        
+        First, we have to compute the row and column offsets of the referenced cell from the active cell. 
+        In the data validation context, the active cell is the top-left cell of the last range in the sequence of ranges 
+        on which the validation rule is defined. The caller is responsible for passing the correct cell reference.  
+        
+        Then, those offsets are applied to a new point of origin, which is the top-left cell of the rectangular bounding area 
+        of all ranges. The resulting cell reference is what is stored in the serialized version of the formula.
+        
+        All this does not apply to XLSB, where a simple normalized cell offset is stored instead.
+        ************** */   
+        toCellOffset(localRef.area.firstCell, ctx.cell, false);
+        resolveOffset(localRef.area.firstCell, ctx.dvCellOrigin);
+      else
+        toCellOffset(localRef.area.firstCell, ctx.cell);
+      end if;
+      
     else
       ptgType := PTG_REF_R;
     end if;
@@ -1553,14 +1624,23 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     ptgType    pls_integer;
     localArea  area3d_t := areaValue;
   begin
-    if ctx.binary
-       and ctx.config.fmlaType = FMLATYPE_SHARED
-       and not(localArea.area.firstCell.col.isAbsolute and localArea.area.firstCell.rw.isAbsolute
-               and localArea.area.lastCell.col.isAbsolute and localArea.area.lastCell.rw.isAbsolute)
+    if not(localArea.area.firstCell.col.isAbsolute and localArea.area.firstCell.rw.isAbsolute
+           and localArea.area.lastCell.col.isAbsolute and localArea.area.lastCell.rw.isAbsolute)
+       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
+             or ctx.config.fmlaType = FMLATYPE_DATAVAL )
     then
       ptgType := PTG_AREAN_R;
-      applyCellOffset(localArea.area.firstCell, ctx.cell);
-      applyCellOffset(localArea.area.lastCell, ctx.cell);
+
+      if ctx.config.fmlaType = FMLATYPE_DATAVAL and not ctx.binary then
+        toCellOffset(localArea.area.firstCell, ctx.cell, false);
+        toCellOffset(localArea.area.lastCell, ctx.cell, false);
+        resolveOffset(localArea.area.firstCell, ctx.dvCellOrigin);
+        resolveOffset(localArea.area.lastCell, ctx.dvCellOrigin);
+      else
+        toCellOffset(localArea.area.firstCell, ctx.cell);
+        toCellOffset(localArea.area.lastCell, ctx.cell);
+      end if;
+      
     else
       ptgType := PTG_AREA_R;
     end if;
@@ -1574,7 +1654,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     localRef3d  area3d_t := ref3dValue;
   begin
     if ctx.config.fmlaType = FMLATYPE_NAME then
-      applyCellOffset(localRef3d.area.firstCell, ctx.cell);
+      toCellOffset(localRef3d.area.firstCell, ctx.cell);
     end if;
     nodeId := createPtg(PTG_REF3D_R, makeRef3d(localRef3d), pos);
     ptgArea3dList(nodeId).value := localRef3d;
@@ -1586,8 +1666,8 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     localArea3d  area3d_t := area3dValue;
   begin
     if ctx.config.fmlaType = FMLATYPE_NAME then
-      applyCellOffset(localArea3d.area.firstCell, ctx.cell);
-      applyCellOffset(localArea3d.area.lastCell, ctx.cell);
+      toCellOffset(localArea3d.area.firstCell, ctx.cell);
+      toCellOffset(localArea3d.area.lastCell, ctx.cell);
     end if;
     nodeId := createPtg(PTG_AREA3D_R, makeArea3d(localArea3d), pos);
     ptgArea3dList(nodeId).value := localArea3d;
@@ -2012,7 +2092,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
           if isDigit(c) then
             readDigits; 
             cell.rw.value := ctx.cell.rw.value - 1 + toLocalNumber(str) * case when neg then -1 else 1 end;
-            adjustRow(cell.rw);
+            normalizeRowOffset(cell.rw);
             cell.rw.isAbsolute := false;
             if c = ']' then
               get;
@@ -2063,7 +2143,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
           if isDigit(c) then
             readDigits;
             cell.col.value := ctx.cell.col.value - 1 + toLocalNumber(str) * case when neg then -1 else 1 end;
-            adjustColumn(cell.col);
+            normalizeColumnOffset(cell.col);
             cell.col.isAbsolute := false;
             if c = ']' then
               get;
@@ -2999,7 +3079,13 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
     classConv := case when nameFmla then CLASSCONV_ARR else CLASSCONV_VAL end;    
   
     convInfo.convClass := paramConv;
-    convInfo.valueType := not(nameFmla);  
+    
+    -- force the root valueType if necessary
+    if ctx.config.valType is not null then
+      convInfo.valueType := ctx.config.valType;
+    else
+      convInfo.valueType := not(nameFmla);
+    end if;
   
     transformOperand(
       nodeId         => rootId
@@ -4021,6 +4107,7 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
   end;
   
   procedure putIfExpr (ptg in parseNode_t) is
+    funcPtgId     nodeHandle := ptg.children(ptg.children.last);
     ptgAttrIfPtr  pls_integer;
     gotos         intList_t := intList_t(); -- list of pointers to PtgAttrGoTo
   begin
@@ -4048,8 +4135,8 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
       gotos(gotos.last) := currentStream.sz + 1;
       putBytes('19080000');
     end if;
-        
-    putPtgFuncVar(ptgFuncVarList(ptg.id));
+    
+    putPtg(funcPtgId);
 
     for i in 1 .. gotos.count loop
       putBytes(toBin(currentStream.sz - gotos(i) - 4, 2), gotos(i)+2);
@@ -4373,16 +4460,18 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
   end;
   
   function parse (
-    p_expr     in varchar2
-  , p_type     in pls_integer default null
-  , p_cellRef  in varchar2 default null
-  , p_refStyle in pls_integer default null
+    p_expr       in varchar2
+  , p_type       in pls_integer default null
+  , p_cellRef    in varchar2 default null
+  , p_refStyle   in pls_integer default null
+  , p_dvCellRef  in varchar2 default null
   ) 
   return varchar2
   is
   begin
     ctx.binary := false;
     ctx.refStyle := nvl(p_refStyle, REF_A1);
+    ctx.dvCellOrigin := parseCellReference(p_dvCellRef);
     setFormulaType(nvl(p_type, FMLATYPE_CELL));
     setCurrentCell(nvl(p_cellRef, 'A1'));
     return serialize(parseAll(p_expr)).chars.content;
@@ -4393,12 +4482,13 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
   , p_type     in pls_integer default null
   , p_cellRef  in varchar2 default null
   , p_refStyle in pls_integer default null
+  , p_valType  in boolean default null
   ) 
   return raw
   is
     rootId  nodeHandle;
   begin
-    setFormulaType(nvl(p_type, FMLATYPE_CELL));
+    setFormulaType(nvl(p_type, FMLATYPE_CELL), p_valType);
     setCurrentCell(nvl(p_cellRef, 'A1'));
     ctx.definedNames := ExcelTypes.CT_DefinedNames();
     ctx.volatile := false;
@@ -4415,7 +4505,9 @@ B6TwXm+8N8Nw/QO/313mep+zMBbv+CYEgD0XbqDuFf/CiNgzPoUXZf6HIM2GqloMLfXsxoCWHXCOfaCi
       putBytes('0000'); -- unused
     end if;
     
-    putPtg(rootId);
+    if rootId is not null then
+      putPtg(rootId);
+    end if;
     
     return utl_raw.concat(toBin(currentStream.sz)      -- cce
                         , currentStream.bytes.content  -- rgce

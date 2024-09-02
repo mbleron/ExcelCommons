@@ -46,7 +46,8 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2023-05-03     Added date style detection
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
     Marc Bleron       2024-05-01     Added sheet state, formula support
-    Marc Bleron       2024-07-03     Themed color handling in make_BrtColor  
+    Marc Bleron       2024-07-03     Themed color handling in make_BrtColor
+    Marc Bleron       2024-08-16     Data validation
 ========================================================================================== */
 
   -- Binary Record Types
@@ -71,6 +72,7 @@ create or replace package body xutl_xlsb is
   BRT_XF                constant pls_integer := 47;
   BRT_STYLE             constant pls_integer := 48;
   BRT_COLINFO           constant pls_integer := 60;
+  BRT_DVAL              constant pls_integer := 64;
   BRT_BEGINSHEET        constant pls_integer := 129;
   BRT_BEGINBOOKVIEWS    constant pls_integer := 135;
   BRT_ENDBOOKVIEWS      constant pls_integer := 136;
@@ -100,6 +102,8 @@ create or replace package body xutl_xlsb is
   BRT_SHRFMLA           constant pls_integer := 427;
   BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
+  BRT_BEGINDVALS        constant pls_integer := 573;
+  BRT_ENDDVALS          constant pls_integer := 574;
   BRT_BEGINFMTS         constant pls_integer := 615;
   BRT_ENDFMTS           constant pls_integer := 616;
   BRT_BEGINCELLXFS      constant pls_integer := 617;
@@ -801,6 +805,7 @@ create or replace package body xutl_xlsb is
     rec       in out nocopy Record_T
   , strValue  in varchar2 default null
   , lobValue  in clob default null
+  , nullable  in boolean default false
   )
   is
     cch     pls_integer;
@@ -810,7 +815,11 @@ create or replace package body xutl_xlsb is
     offset  integer := 1;
     rem     integer;
   begin
-    if lobValue is null then
+    if nullable and strValue is null and lobValue is null then
+      
+      write_record(rec, 'FFFFFFFF'); -- NULL
+    
+    elsif lobValue is null then
       
       cch := nvl(length(strValue), 0);
       write_record(rec, int2raw(cch)); -- cchCharacters
@@ -1360,12 +1369,7 @@ create or replace package body xutl_xlsb is
       )
     );
     write_record(rec, '00');  -- reserved
-    -- stStyleName :
-    if tableStyleName is not null then
-      write_XLWideString(rec, tableStyleName);
-    else
-      write_record(rec, 'FFFFFFFF'); -- NULL
-    end if;
+    write_XLWideString(rec, tableStyleName, nullable => true); -- stStyleName
     
     return rec;
   end;
@@ -1495,12 +1499,8 @@ create or replace package body xutl_xlsb is
     ExcelFmla.setCurrentSheet(nm.scope);
     
     write_record(rec, ExcelFmla.parseBinary(nm.formula, ExcelFmla.FMLATYPE_NAME, nm.cellRef, nm.refStyle));
-    -- comment
-    if nm.comment is not null then
-      write_XLWideString(rec, nm.comment);
-    else
-      write_record(rec, 'FFFFFFFF'); -- NULL
-    end if;
+    write_XLWideString(rec, nm.comment, nullable => true); -- comment
+    
     -- if fProc = 1 (which is implied by fFutureFunction)
     if nm.futureFunction then
       write_record(rec, 'FFFFFFFF'); -- unusedstring1
@@ -1557,6 +1557,79 @@ create or replace package body xutl_xlsb is
   begin
     write_record(rec, utl_raw.copies('00',16)); -- rfx placeholder    
     write_record(rec, ExcelFmla.parseBinary(expr, ExcelFmla.FMLATYPE_SHARED, cellRef, refStyle));
+    return rec;
+  end;
+
+  -- 2.4.55 BrtBeginDVals
+  function make_BeginDVals (
+    cnt  in pls_integer
+  )
+  return record_t
+  is
+    rec  record_t := new_record(BRT_BEGINDVALS);
+  begin
+    write_record(rec, '0000'); -- A + reserved
+    write_record(rec, '00000000'); -- xLeft
+    write_record(rec, '00000000'); -- yTop
+    write_record(rec, '00000000'); -- unused3
+    write_record(rec, int2raw(cnt)); -- idvMac
+    return rec;
+  end;
+
+  -- 2.4.353 BrtDVal
+  function make_DVal (
+    dvRule  in ExcelTypes.CT_DataValidation
+  )
+  return record_t
+  is
+    rec      record_t := new_record(BRT_DVAL);
+    valType  boolean;
+  begin
+    write_record(rec
+               , int2raw(
+                   ExcelTypes.getDataValidationTypeId(dvRule.type) -- valType (4 bits)
+                   + 16 * ExcelTypes.getDataValidationErrStyleId(dvRule.errorStyle) -- errStyle (3 bits) << 4
+                 , 1
+                 )
+               );
+    write_record(rec
+               , bitVector(
+                   case when dvRule.allowBlank then 1 else 0 end   -- fAllowBlank
+                 , case when dvRule.showDropDown then 0 else 1 end -- fSuppressCombo
+                 , 0,0,0,0,0,0 -- bits 0-5 of mdImeMode (0x00 = No control)
+                 ));
+    write_record(rec
+               , utl_raw.bit_or(
+                   bitVector(
+                     0,0 -- bits 6-7 of mdImeMode
+                   , case when dvRule.showInputMessage then 1 else 0 end -- fShowInputMsg
+                   , case when dvRule.showErrorMessage then 1 else 0 end -- fShowErrorMsg
+                   )
+                 , int2raw(16 * ExcelTypes.getDataValidationOpId(dvRule.operator), 1) -- typOperator << 4
+                 ));
+    write_record(rec, '00'); -- reserved
+    write_record(rec, int2raw(dvRule.sqref.count)); -- sqrfx.crfx
+    for i in 1 .. dvRule.sqref.count loop
+      write_record(rec, int2raw(dvRule.sqref(i).rwFirst - 1)); -- rgrfx[i].rwFirst
+      write_record(rec, int2raw(dvRule.sqref(i).rwLast - 1)); -- rgrfx[i].rwLast
+      write_record(rec, int2raw(dvRule.sqref(i).colFirst - 1)); -- rgrfx[i].colFirst
+      write_record(rec, int2raw(dvRule.sqref(i).colLast - 1)); -- rgrfx[i].colLast
+    end loop;
+    
+    write_XLWideString(rec, dvRule.errorTitle, nullable => true);  -- DValStrings.strErrorTitle
+    write_XLWideString(rec, dvRule.error, nullable => true);       -- DValStrings.strError
+    write_XLWideString(rec, dvRule.promptTitle, nullable => true); -- DValStrings.strPromptTitle
+    write_XLWideString(rec, dvRule.prompt, nullable => true);      -- DValStrings.strPrompt
+    
+    -- 2.5.98.8 DVParsedFormula
+    -- root VALUE_TYPE forced to false if this is a list-based validation
+    if dvRule.type = 'list' then
+      valType := false;
+    end if;
+    
+    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla1, ExcelFmla.FMLATYPE_DATAVAL, dvRule.activeCellRef, dvRule.refStyle1, valType));
+    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla2, ExcelFmla.FMLATYPE_DATAVAL, dvRule.activeCellRef, dvRule.refStyle2));
+        
     return rec;
   end;
   
@@ -2007,6 +2080,19 @@ create or replace package body xutl_xlsb is
     next_record(stream);
     expect(stream, BRT_SHRFMLA);
     dbms_lob.write(stream.content, 16, stream.offset, make_RfX(firstRow, firstCol, lastRow, lastCol));
+  end;
+
+  procedure put_DVals (
+    stream    in out nocopy stream_t
+  , dvRules   in ExcelTypes.CT_DataValidations
+  )
+  is
+  begin
+    put_record(stream, make_BeginDVals(dvRules.count));
+    for i in 1 .. dvRules.count loop
+      put_record(stream, make_DVal(dvRules(i)));
+    end loop;
+    put_simple_record(stream, BRT_ENDDVALS);
   end;
 
   -- convert a 0-based column number to base26 string
@@ -2797,6 +2883,8 @@ create or replace package body xutl_xlsb is
     type uncheckedRfX_t is record (rwFirst pls_integer, rwLast pls_integer, colFirst pls_integer, colLast pls_integer);
     rfx  uncheckedRfX_t;
     
+    dvFmla   boolean;
+    
   begin
     
     open rc for 'select utl_raw.cast_to_binary_integer(utl_raw.concat(byte1,byte2)), ptg_name, ptg_size, decode(has_type,''Y'',1,0) from xlsb_ptg';
@@ -2812,11 +2900,13 @@ create or replace package body xutl_xlsb is
 
     while stream.offset < stream.sz loop
       next_record(stream);   
-      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA,BRT_NAME,BRT_SHRFMLA);
+      continue when stream.rt not in (BRT_FMLASTRING,BRT_FMLANUM,BRT_FMLABOOL,BRT_FMLAERROR,BRT_ARRFMLA,BRT_NAME,BRT_SHRFMLA,BRT_DVAL);
       
       debug('---------------------------');
       debug(recordTypeLabelMap(stream.rt));
       debug('---------------------------');
+      
+      dvFmla := false;
       
       if stream.rt = BRT_ARRFMLA then
 
@@ -2846,6 +2936,30 @@ create or replace package body xutl_xlsb is
         debug('itab='||read_int32(stream)); -- itab
         debug('name='||read_XLString(stream).strValue); -- name
         
+      elsif stream.rt = BRT_DVAL then
+        
+        dvFmla := true;
+        
+        skip(stream, 4); -- valType .. reserved
+        cnt := read_int32(stream); -- sqrfx.crfx
+        skip(stream, cnt * 16); -- rgrfx
+        cnt := read_int32(stream); -- DValStrings.strErrorTitle.cchCharacters
+        if cnt != -1 then
+           skip(stream, cnt * 2);     -- DValStrings.strErrorTitle.rgchData
+        end if;
+        cnt := read_int32(stream); -- DValStrings.strError.cchCharacters
+        if cnt != -1 then
+          skip(stream, cnt * 2);     -- DValStrings.strError.rgchData
+        end if;
+        cnt := read_int32(stream); -- DValStrings.strPromptTitle.cchCharacters
+        if cnt != -1 then
+          skip(stream, cnt * 2);     -- DValStrings.strPromptTitle.rgchData
+        end if;
+        cnt := read_int32(stream); -- DValStrings.strPrompt.cchCharacters
+        if cnt != -1 then
+          skip(stream, cnt * 2);     -- DValStrings.strPrompt.rgchData
+        end if;
+        
       else
       
         skip(stream, 8); -- Cell
@@ -2865,7 +2979,8 @@ create or replace package body xutl_xlsb is
         skip(stream, 2); -- grbitFlags
       
       end if;
-        
+      
+      <<READ_FORMULA>>
       debug('BEGIN ParsedFormula');
       
       extras.delete;
@@ -2998,6 +3113,12 @@ create or replace package body xutl_xlsb is
       debug('END RgbExtra');
       
       debug('END ParsedFormula');
+      
+      -- if this is a DVParsedFormula, iterate to read formula2
+      if dvFmla then
+        dvFmla := false;
+        goto READ_FORMULA;
+      end if;
         
     end loop;
     close_stream(stream);
