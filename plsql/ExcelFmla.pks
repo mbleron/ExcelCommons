@@ -10,11 +10,13 @@ create or replace package ExcelFmla is
 =========================================================================================
     Change history :
     Marc Bleron       2023-10-01     Creation
+    Marc Bleron       2024-08-16     Data validation feature
 ====================================================================================== */
 
-  FMLATYPE_CELL    constant pls_integer := 0;
-  FMLATYPE_SHARED  constant pls_integer := 2;
-  FMLATYPE_NAME    constant pls_integer := 5;
+  FMLATYPE_CELL     constant pls_integer := 0;
+  FMLATYPE_SHARED   constant pls_integer := 2;
+  FMLATYPE_DATAVAL  constant pls_integer := 4;
+  FMLATYPE_NAME     constant pls_integer := 5;
   
   REF_R1C1         constant pls_integer := 0;
   REF_A1           constant pls_integer := 1;
@@ -45,12 +47,12 @@ create or replace package ExcelFmla is
   procedure putSheet (name in varchar2, idx in pls_integer default null);
   procedure setCurrentSheet (sheetName in varchar2);
   procedure setCurrentCell (cellRef in varchar2);
-  procedure setFormulaType (fmlaType in pls_integer);
+  procedure setFormulaType (fmlaType in pls_integer, valType in boolean default null);
   
   function getParseTree (input in varchar2, refStyle in pls_integer default REF_A1) return parseTree_t pipelined;
   
-  function parse (p_expr in varchar2, p_type in pls_integer default null, p_cellRef in varchar2 default null, p_refStyle in pls_integer default null) return varchar2;
-  function parseBinary (p_expr in varchar2, p_type in pls_integer default null, p_cellRef in varchar2 default null, p_refStyle in pls_integer default null) return raw;
+  function parse (p_expr in varchar2, p_type in pls_integer default null, p_cellRef in varchar2 default null, p_refStyle in pls_integer default null, p_dvCellRef in varchar2 default null) return varchar2;
+  function parseBinary (p_expr in varchar2, p_type in pls_integer default null, p_cellRef in varchar2 default null, p_refStyle in pls_integer default null, p_valType  in boolean default null) return raw;
   procedure setContext (p_sheets in ExcelTypes.CT_Sheets, p_names in ExcelTypes.CT_DefinedNames);
   function getFormula return varchar2;
   function getExternals return ExcelTypes.CT_Externals;

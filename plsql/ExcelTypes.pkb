@@ -33,6 +33,7 @@ create or replace package body ExcelTypes is
                                      and rich text support
     Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
                                      Added font strikethrough, text orientation, indent
+    Marc Bleron       2024-08-13     Added dataValidation structure
 ====================================================================================== */
 
   NAMED_COLORS  constant varchar2(4000) := 
@@ -133,7 +134,7 @@ JwPAMSMD8DEuAyAyIwNQMq4EADO1GgTATQNSBACgjAQDkKQ2BAClDAEDEKYbA0CmHwNiphADfKYBA3+m
 DQNQqgkEAKyjKwQA2C0iAzD6OgNw+mkDAPsGAxP7BAMd+xkDOPsEAj77A0D7AQND+wEDRvtrBNP7agEDUP0/A5L9NQPw/Q0DAP4PAyD+BgMw/gEDM/4RA0n+CQNU/gMD
 Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
 
-  type simpleTypeMap_t is table of pls_integer index by varchar2(16);
+  type simpleTypeMap_t is table of pls_integer index by varchar2(20);
 
   -- BEGIN CSS parser constants & structures
 
@@ -242,6 +243,9 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   hAlignmentMap      simpleTypeMap_t;
   vAlignmentMap      simpleTypeMap_t;
   fontVertAlignMap   simpleTypeMap_t;
+  dataValTypeMap     simpleTypeMap_t;
+  dataValOpMap       simpleTypeMap_t;
+  dataValErrStyleMap simpleTypeMap_t;
   
   builtInDateFmtMap  CT_NumFmtMap;
   
@@ -454,6 +458,31 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     builtInDateFmtMap(46) := makeNumFmt(46, '[h]:mm:ss');
     builtInDateFmtMap(47) := makeNumFmt(47, 'mmss.0');
     
+    -- data validation type
+    dataValTypeMap('none') := 0;
+    dataValTypeMap('whole') := 1;
+    dataValTypeMap('decimal') := 2;
+    dataValTypeMap('list') := 3;
+    dataValTypeMap('date') := 4;
+    dataValTypeMap('time') := 5;
+    dataValTypeMap('textLength') := 6;
+    dataValTypeMap('custom') := 7;
+    
+    -- data validation operator
+    dataValOpMap('between') := 0;
+    dataValOpMap('notBetween') := 1;
+    dataValOpMap('equal') := 2;
+    dataValOpMap('notEqual') := 3;
+    dataValOpMap('greaterThan') := 4;
+    dataValOpMap('lessThan') := 5;
+    dataValOpMap('greaterThanOrEqual') := 6;
+    dataValOpMap('lessThanOrEqual') := 7;
+    
+    -- data validation error style
+    dataValErrStyleMap('stop') := 0;
+    dataValErrStyleMap('warning') := 1;
+    dataValErrStyleMap('information') := 2;
+    
   end;
 
   procedure error (
@@ -505,6 +534,21 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   function isValidFontVerticalAlignment (p_fontVertAlign in varchar2) return boolean is
   begin
     return fontVertAlignMap.exists(p_fontVertAlign);
+  end;
+  
+  function isValidDataValidationType (p_dataValType in varchar2) return boolean is
+  begin
+    return dataValTypeMap.exists(p_dataValType);
+  end;
+
+  function isValidDataValidationOperator (p_dataValOp in varchar2) return boolean is
+  begin
+    return dataValOpMap.exists(p_dataValOp);
+  end;
+
+  function isValidDataValidationErrStyle (p_dataValErrStyle in varchar2) return boolean is
+  begin
+    return dataValErrStyleMap.exists(p_dataValErrStyle);
   end;
 
   function getColorMap return colorMap_t is
@@ -621,6 +665,21 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   function getFontVerticalAlignmentId (p_fontVertAlign in varchar2) return pls_integer is
   begin
     return fontVertAlignMap(p_fontVertAlign);
+  end;
+
+  function getDataValidationTypeId (p_dataValType in varchar2) return pls_integer is
+  begin
+    return dataValTypeMap(p_dataValType);
+  end;
+
+  function getDataValidationOpId (p_dataValOp in varchar2) return pls_integer is
+  begin
+    return dataValOpMap(p_dataValOp);
+  end;
+  
+  function getDataValidationErrStyleId (p_dataValErrStyle in varchar2) return pls_integer is
+  begin
+    return dataValErrStyleMap(p_dataValErrStyle);
   end;
   
   procedure unexpectedToken (token in token_t) is

@@ -46,6 +46,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2023-05-03     Added date style detection
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
     Marc Bleron       2024-05-01     Added sheet state, formula support
+    Marc Bleron       2024-08-16     Data validation
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -292,6 +293,11 @@ create or replace package xutl_xlsb is
   , firstCol  in pls_integer
   , lastRow   in pls_integer
   , lastCol   in pls_integer  
+  );
+
+  procedure put_DVals (
+    stream    in out nocopy stream_t
+  , dvRules   in ExcelTypes.CT_DataValidations
   );
     
   function new_context (
