@@ -15,6 +15,7 @@ create or replace package ExcelFmla is
 
   FMLATYPE_CELL     constant pls_integer := 0;
   FMLATYPE_SHARED   constant pls_integer := 2;
+  FMLATYPE_CONDFMT  constant pls_integer := 3;
   FMLATYPE_DATAVAL  constant pls_integer := 4;
   FMLATYPE_NAME     constant pls_integer := 5;
   
@@ -39,6 +40,7 @@ create or replace package ExcelFmla is
   
   procedure setDebug (enabled in boolean default true);
 
+  function getNLS (parameterName in varchar2) return varchar2;
   function base26Decode (input in varchar2) return pls_integer result_cache;
   function base26Encode (input in pls_integer) return varchar2 result_cache;
   function isValidCellReference (input in varchar2, refStyle in pls_integer default REF_A1) return boolean;

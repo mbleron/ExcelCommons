@@ -34,6 +34,7 @@ create or replace package body ExcelTypes is
     Marc Bleron       2024-02-23     Fix: NLS-independent conversion of CSS number-token
                                      Added font strikethrough, text orientation, indent
     Marc Bleron       2024-08-13     Added dataValidation structure
+    Marc Bleron       2024-09-04     Added conditionalFormatting structures
 ====================================================================================== */
 
   NAMED_COLORS  constant varchar2(4000) := 
@@ -195,7 +196,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   type stringList_t is table of varchar2(256);
   
   type rgbColor_t is record (r pls_integer, g pls_integer, b pls_integer, a number);
-  type cssBorderSide_t is record (style varchar2(256) := 'none', width varchar2(256) := 'medium', color varchar2(256));
+  type cssBorderSide_t is record (style varchar2(256) /*:= 'none'*/, width varchar2(256) := 'medium', color varchar2(256));
   type cssBorder_t is record (top cssBorderSide_t, right cssBorderSide_t, bottom cssBorderSide_t, left cssBorderSide_t);
   type cssFont_t is record (family varchar2(256), sz varchar2(256), style varchar2(256) := '', weight varchar2(256) := '');
   type cssTextDecoration_t is record (line stringList_t := stringList_t(), style varchar2(256) := 'solid');
@@ -551,6 +552,103 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     return dataValErrStyleMap.exists(p_dataValErrStyle);
   end;
 
+  function isValidCondFmtRuleType (p_type in pls_integer) return boolean is
+  begin
+    return 
+    p_type in (
+      CF_TYPE_CELLIS
+    , CF_TYPE_EXPR
+    , CF_TYPE_COLORSCALE
+    , CF_TYPE_DATABAR
+    , CF_TYPE_ICONSET
+    , CF_TYPE_TOP
+    , CF_TYPE_BOTTOM
+    , CF_TYPE_UNIQUES
+    , CF_TYPE_DUPLICATES
+    , CF_TYPE_TEXT
+    , CF_TYPE_BLANKS
+    , CF_TYPE_NOBLANKS
+    , CF_TYPE_ERRORS
+    , CF_TYPE_NOERRORS
+    , CF_TYPE_TIMEPERIOD
+    , CF_TYPE_ABOVEAVERAGE
+    , CF_TYPE_BELOWAVERAGE
+    , CF_TYPE_EQUALABOVEAVERAGE
+    , CF_TYPE_EQUALBELOWAVERAGE
+    );
+  end;
+  
+  function isValidCondFmtOperator (p_type in pls_integer, p_operator in pls_integer) return boolean is
+  begin
+    return
+    ( 
+      p_type = CF_TYPE_TEXT 
+      and p_operator in (
+        CF_TEXTOPER_CONTAINS
+      , CF_TEXTOPER_NOTCONTAINS
+      , CF_TEXTOPER_BEGINSWITH
+      , CF_TEXTOPER_ENDSWITH
+      )
+    )
+    or (
+      p_type = CF_TYPE_CELLIS 
+      and p_operator in (
+        CF_OPER_BN
+      , CF_OPER_NB
+      , CF_OPER_EQ
+      , CF_OPER_NE
+      , CF_OPER_GT
+      , CF_OPER_LT
+      , CF_OPER_GE
+      , CF_OPER_LE
+      )    
+    )
+    or (
+      p_type = CF_TYPE_TIMEPERIOD 
+      and p_operator in (
+        CF_TIMEPERIOD_TODAY
+      , CF_TIMEPERIOD_YESTERDAY
+      , CF_TIMEPERIOD_LAST7DAYS
+      , CF_TIMEPERIOD_THISWEEK
+      , CF_TIMEPERIOD_LASTWEEK
+      , CF_TIMEPERIOD_LASTMONTH
+      , CF_TIMEPERIOD_TOMORROW
+      , CF_TIMEPERIOD_NEXTWEEK
+      , CF_TIMEPERIOD_NEXTMONTH
+      , CF_TIMEPERIOD_THISMONTH
+      )
+    );
+  end;
+
+  function isValidCondFmtVOType (p_type in pls_integer) return boolean is
+  begin
+    return p_type in (CFVO_NUM, CFVO_MIN, CFVO_MAX, CFVO_PERCENT, CFVO_PERCENTILE, CFVO_FMLA);
+  end;
+
+  function isValidCondFmtIconSet (p_iconSet in pls_integer) return boolean is
+  begin
+    return
+    p_iconSet in (
+      CF_ICONSET_3ARROWS
+    , CF_ICONSET_3ARROWSGRAY
+    , CF_ICONSET_3FLAGS
+    , CF_ICONSET_3TRAFFICLIGHTS1
+    , CF_ICONSET_3TRAFFICLIGHTS2
+    , CF_ICONSET_3SIGNS
+    , CF_ICONSET_3SYMBOLS
+    , CF_ICONSET_3SYMBOLS2
+    , CF_ICONSET_4ARROWS
+    , CF_ICONSET_4ARROWSGRAY
+    , CF_ICONSET_4REDTOBLACK
+    , CF_ICONSET_4RATING
+    , CF_ICONSET_4TRAFFICLIGHTS
+    , CF_ICONSET_5ARROWS
+    , CF_ICONSET_5ARROWSGRAY
+    , CF_ICONSET_5RATING
+    , CF_ICONSET_5QUARTERS    
+    );
+  end;
+
   function getColorMap return colorMap_t is
   begin
     return colorMap;
@@ -637,6 +735,23 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     return rgbCode;
   end;
 
+  function makeCfvo (
+    p_type   in pls_integer default null
+  , p_value  in varchar2 default null
+  , p_gte    in boolean default null
+  , p_color  in varchar2 default null
+  )
+  return CT_Cfvo
+  is
+    cfvo  CT_Cfvo;
+  begin
+    cfvo.type := p_type;
+    cfvo.value := p_value;
+    cfvo.gte := p_gte;
+    cfvo.color := p_color;
+    return cfvo;
+  end;
+
   function getUnderlineStyleId (p_underlineStyle in varchar2) return pls_integer is
   begin  
     return underlineStyleMap(p_underlineStyle);
@@ -680,6 +795,138 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   function getDataValidationErrStyleId (p_dataValErrStyle in varchar2) return pls_integer is
   begin
     return dataValErrStyleMap(p_dataValErrStyle);
+  end;
+
+  function getCondFmtRuleType (
+    p_type  in pls_integer
+  , p_temp  in pls_integer
+  )
+  return varchar2
+  is
+  begin
+    return
+    case p_type
+    when CF_TYPE_CELLIS then 'cellIs'
+    when CF_TYPE_EXPRIS then
+      case p_temp
+      when CF_TEMP_FMLA                then 'expression'
+      when CF_TEMP_UNIQUEVALUES        then 'uniqueValues'
+      when CF_TEMP_CONTAINSTEXT        then 'containsText'
+      when CF_TEMP_CONTAINSBLANKS      then 'containsBlanks'
+      when CF_TEMP_CONTAINSNOBLANKS    then 'notContainsBlanks'
+      when CF_TEMP_CONTAINSERRORS      then 'containsErrors'
+      when CF_TEMP_CONTAINSNOERRORS    then 'notContainsErrors'
+      when CF_TEMP_TIMEPERIODTODAY     then 'timePeriod'
+      when CF_TEMP_TIMEPERIODTOMORROW  then 'timePeriod'
+      when CF_TEMP_TIMEPERIODYESTERDAY then 'timePeriod'
+      when CF_TEMP_TIMEPERIODLAST7DAYS then 'timePeriod'
+      when CF_TEMP_TIMEPERIODLASTMONTH then 'timePeriod'
+      when CF_TEMP_TIMEPERIODNEXTMONTH then 'timePeriod'
+      when CF_TEMP_TIMEPERIODTHISWEEK  then 'timePeriod'
+      when CF_TEMP_TIMEPERIODNEXTWEEK  then 'timePeriod'
+      when CF_TEMP_TIMEPERIODLASTWEEK  then 'timePeriod'
+      when CF_TEMP_TIMEPERIODTHISMONTH then 'timePeriod'
+      when CF_TEMP_ABOVEAVERAGE        then 'aboveAverage'
+      when CF_TEMP_BELOWAVERAGE        then 'aboveAverage'
+      when CF_TEMP_DUPLICATEVALUES     then 'duplicateValues'
+      when CF_TEMP_EQUALABOVEAVERAGE   then 'aboveAverage'
+      when CF_TEMP_EQUALBELOWAVERAGE   then 'aboveAverage'
+      end
+    when CF_TYPE_GRADIENT   then 'colorScale'
+    when CF_TYPE_DATABAR    then 'dataBar'
+    when CF_TYPE_FILTER     then 'top10'
+    when CF_TYPE_MULTISTATE then 'iconSet'
+    end;
+  end;
+  
+  function getCondFmtTimePeriod (p_timePeriod in pls_integer)
+  return varchar2
+  is
+  begin
+    return
+    case p_timePeriod
+    when CF_TIMEPERIOD_TODAY     then 'today'
+    when CF_TIMEPERIOD_YESTERDAY then 'yesterday'
+    when CF_TIMEPERIOD_LAST7DAYS then 'last7Days'
+    when CF_TIMEPERIOD_THISWEEK  then 'thisWeek'
+    when CF_TIMEPERIOD_LASTWEEK  then 'lastWeek'
+    when CF_TIMEPERIOD_LASTMONTH then 'lastMonth'
+    when CF_TIMEPERIOD_TOMORROW  then 'tomorrow'
+    when CF_TIMEPERIOD_NEXTWEEK  then 'nextWeek'
+    when CF_TIMEPERIOD_NEXTMONTH then 'nextMonth'
+    when CF_TIMEPERIOD_THISMONTH then 'thisMonth'
+    end;
+  end;
+  
+  function getCondFmtOperator (
+    p_temp      in pls_integer
+  , p_operator  in pls_integer
+  )
+  return varchar2
+  is
+  begin
+    return
+    case p_temp
+    when CF_TEMP_EXPR then
+      case p_operator
+      when CF_OPER_BN then 'between'
+      when CF_OPER_NB then 'notBetween'
+      when CF_OPER_EQ then 'equal'
+      when CF_OPER_NE then 'notEqual'
+      when CF_OPER_GT then 'greaterThan'
+      when CF_OPER_LT then 'lessThan'
+      when CF_OPER_GE then 'greaterThanOrEqual'
+      when CF_OPER_LE then 'lessThanOrEqual'
+      end
+    when CF_TEMP_CONTAINSTEXT then
+      case p_operator
+      when CF_TEXTOPER_CONTAINS    then 'containsText'
+      when CF_TEXTOPER_NOTCONTAINS then 'notContains'
+      when CF_TEXTOPER_BEGINSWITH  then 'beginsWith'
+      when CF_TEXTOPER_ENDSWITH    then 'endsWith'
+      end
+    end;
+  end;
+  
+  function getCondFmtIconSet (p_iconSet in pls_integer) 
+  return varchar2 
+  is
+  begin
+    return
+    case p_iconSet
+    when CF_ICONSET_3ARROWS         then '3Arrows'
+    when CF_ICONSET_3ARROWSGRAY     then '3ArrowsGray'
+    when CF_ICONSET_3FLAGS          then '3Flags'
+    when CF_ICONSET_3TRAFFICLIGHTS1 then '3TrafficLights1'
+    when CF_ICONSET_3TRAFFICLIGHTS2 then '3TrafficLights2'
+    when CF_ICONSET_3SIGNS          then '3Signs'
+    when CF_ICONSET_3SYMBOLS        then '3Symbols'
+    when CF_ICONSET_3SYMBOLS2       then '3Symbols2'
+    when CF_ICONSET_4ARROWS         then '4Arrows'
+    when CF_ICONSET_4ARROWSGRAY     then '4ArrowsGray'
+    when CF_ICONSET_4REDTOBLACK     then '4RedToBlack'
+    when CF_ICONSET_4RATING         then '4Rating'
+    when CF_ICONSET_4TRAFFICLIGHTS  then '4TrafficLights'
+    when CF_ICONSET_5ARROWS         then '5Arrows'
+    when CF_ICONSET_5ARROWSGRAY     then '5ArrowsGray'
+    when CF_ICONSET_5RATING         then '5Rating'
+    when CF_ICONSET_5QUARTERS       then '5Quarters'
+    end;
+  end;
+
+  function getCondFmtVOType (p_cfvoType in pls_integer)
+  return varchar2
+  is
+  begin
+    return
+    case p_cfvoType
+    when CFVO_NUM        then 'num'
+    when CFVO_MIN        then 'min'
+    when CFVO_MAX        then 'max'
+    when CFVO_PERCENT    then 'percent'
+    when CFVO_PERCENTILE then 'percentile'
+    when CFVO_FMLA       then 'formula'
+    end;     
   end;
   
   procedure unexpectedToken (token in token_t) is
@@ -725,23 +972,28 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   procedure setBorderContent (
     border  in out nocopy CT_Border
   )
-  is
+  is    
     function getBorderPrContent (borderName in varchar2, borderPr in CT_BorderPr)
     return varchar2
     is
     begin
-      return '<' || borderName || 
-             case when nvl(borderPr.style, 'none') != 'none' then ' style="'||borderPr.style||'"' end || 
-             case when borderPr.color is not null then '><color rgb="'||borderPr.color||'"/></'||borderName||'>' else '/>' end;
+      return case when borderPr.style is not null then 
+               '<' || borderName || 
+               case when borderPr.style != 'none' then ' style="'||borderPr.style||'"' end || 
+               case when borderPr.color is not null then '><color rgb="'||borderPr.color||'"/></'||borderName||'>' else '/>' end
+             end;
     end;
   begin
     border.content := null;
-    stringWrite(border.content, '<border>');
+    --stringWrite(border.content, '<border>');
     stringWrite(border.content, getBorderPrContent('left', border.left));
     stringWrite(border.content, getBorderPrContent('right', border.right));
     stringWrite(border.content, getBorderPrContent('top', border.top));
     stringWrite(border.content, getBorderPrContent('bottom', border.bottom));
-    stringWrite(border.content, '</border>');    
+    --stringWrite(border.content, '</border>');
+    if border.content is not null then
+      border.content := '<border>' || border.content || '</border>';
+    end if;
   end;
 
   procedure setFontContent (
@@ -750,9 +1002,15 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   is
   begin
     font.content := null;
-    stringWrite(font.content, '<font>');
-    stringWrite(font.content, '<sz val="'||to_char(nvl(font.sz, DEFAULT_FONT_SIZE))||'"/>');
-    stringWrite(font.content, '<name val="'||nvl(font.name, DEFAULT_FONT_FAMILY)||'"/>');
+    --stringWrite(font.content, '<font>');
+    --stringWrite(font.content, '<sz val="'||to_char(nvl(font.sz, DEFAULT_FONT_SIZE))||'"/>');
+    if font.sz is not null then
+      stringWrite(font.content, '<sz val="'||to_char(font.sz)||'"/>');
+    end if;
+    --stringWrite(font.content, '<name val="'||nvl(font.name, DEFAULT_FONT_FAMILY)||'"/>');
+    if font.name is not null then
+      stringWrite(font.content, '<name val="'||font.name||'"/>');
+    end if;
     if font.b then
       stringWrite(font.content, '<b/>');
     end if;
@@ -769,11 +1027,16 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
         stringWrite(font.content, '<color rgb="'||font.color||'"/>');
       end if;
     end if;
-    stringWrite(font.content, '<u val="'||nvl(font.u, 'none')||'"/>');
+    if font.u is not null then
+      stringWrite(font.content, '<u val="'||font.u||'"/>');
+    end if;
     if font.vertAlign is not null then
       stringWrite(font.content, '<vertAlign val="'||font.vertAlign||'"/>');
     end if;
-    stringWrite(font.content, '</font>');    
+    --stringWrite(font.content, '</font>');
+    if font.content is not null then
+      font.content := '<font>' || font.content || '</font>';
+    end if;
   end;
 
   procedure setFillContent (
@@ -903,12 +1166,12 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   function makeFont (
     p_name       in varchar2 default null
   , p_sz         in pls_integer default null
-  , p_b          in boolean default false
-  , p_i          in boolean default false
+  , p_b          in boolean default null
+  , p_i          in boolean default null
   , p_color      in varchar2 default null
   , p_u          in varchar2 default null
   , p_vertAlign  in varchar2 default null
-  , p_strike     in boolean default false
+  , p_strike     in boolean default null
   )
   return CT_Font
   is
@@ -920,9 +1183,9 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     if p_sz is not null then
       font.sz := p_sz;
     end if;
-    font.b := nvl(p_b, false);
-    font.i := nvl(p_i, false);
-    font.strike := nvl(p_strike, false);
+    font.b := p_b;
+    font.i := p_i;
+    font.strike := p_strike;
     
     if p_u is not null then 
       if isValidUnderlineStyle(p_u) then
@@ -1131,22 +1394,33 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     return newBorder;
   end;
 
-  function mergeFonts (masterFont in CT_Font, font in CT_Font, force in boolean default false) return CT_Font is
+  procedure swapPatternFillColors (fill in out nocopy CT_Fill) is
+    tmp  fill.patternFill.fgColor%type;
+  begin
+    if fill.fillType = FT_PATTERN then
+      tmp := fill.patternFill.fgColor;
+      fill.patternFill.fgColor := fill.patternFill.bgColor;
+      fill.patternFill.bgColor := tmp;
+      setFillContent(fill);
+    end if;
+  end;
+
+  function mergeFonts (masterFont in CT_Font, font in CT_Font/*, force in boolean default false*/) return CT_Font is
     mergedFont  CT_Font := masterFont;
   begin  
     if font.name is not null then
       mergedFont.name := font.name;
     end if;
-    if font.b is not null and ( font.b or force ) then
+    if font.b is not null then
       mergedFont.b := font.b;
     end if;
-    if font.i is not null and ( font.i or force ) then
+    if font.i is not null then
       mergedFont.i := font.i;
     end if;
-    if font.strike is not null and ( font.strike or force ) then
+    if font.strike is not null then
       mergedFont.strike := font.strike;
     end if;
-    if font.u is not null and ( font.u != 'none' or force ) then
+    if font.u is not null then
       mergedFont.u := font.u;
     end if;
     if font.color is not null then
@@ -1155,7 +1429,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     if font.sz is not null then
       mergedFont.sz := font.sz;
     end if;
-    if font.vertAlign is not null or force then
+    if font.vertAlign is not null then
       mergedFont.vertAlign := font.vertAlign;
     end if;
     setFontContent(mergedFont);
@@ -1296,7 +1570,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
           when 'span' then
             styleAttr := dbms_xmldom.getAttribute(dbms_xmldom.makeElement(node), 'style');        
             style := getStyleFromCss(styleAttr);
-            font := mergeFonts(font, style.font, force => true);
+            font := mergeFonts(font, style.font/*, force => true*/);
           when 'sub' then
             font.vertAlign := 'subscript';
           when 'sup' then
@@ -3476,6 +3750,8 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
                         end ;
     when 'dot-dash-slanted' then
       borderPr.style := 'slantDashDot';
+    else
+      null;
     end case;
     
     borderPr.color := validateColor(cssBorderSide.color);
@@ -3491,17 +3767,23 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
                      , convertCssBorderSide(cssBorder.top)
                      , convertCssBorderSide(cssBorder.bottom) );
   end;
-
   
-
   function convertCssFont (css in cssStyle_t) return CT_Font is
     font  CT_Font;
   begin
     
     font.name := css.font.family;
     font.sz := regexp_substr(css.font.sz, '^\d+'); -- digits only
-    font.i := ( css.font.style = 'italic' );
-    font.b := ( css.font.weight = 'bold' );
+    
+    font.i := case css.font.style 
+              when 'italic' then true
+              when 'normal' then false
+              end;
+    
+    font.b := case css.font.weight
+              when 'bold' then true
+              when 'normal' then false
+              end;
     
     for i in 1 .. css.textDecoration.line.count loop
       case css.textDecoration.line(i)
@@ -3524,7 +3806,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     elsif css.verticalAlign = 'super' then
       font.vertAlign := 'superscript';
     elsif css.verticalAlign = 'baseline' then
-      font.vertAlign := null;
+      font.vertAlign := 'baseline';
     end if;
     
     font.color := validateColor(css.color);

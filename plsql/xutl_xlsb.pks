@@ -249,6 +249,11 @@ create or replace package xutl_xlsb is
   , alignment   in ExcelTypes.CT_CellAlignment default null
   );
 
+  procedure put_DXF (
+    stream  in out nocopy stream_t
+  , style   in ExcelTypes.CT_Style
+  );
+
   procedure put_ColInfo (
     stream         in out nocopy stream_t
   , colId          in pls_integer
@@ -299,6 +304,11 @@ create or replace package xutl_xlsb is
     stream    in out nocopy stream_t
   , dvRules   in ExcelTypes.CT_DataValidations
   );
+
+  procedure put_CondFmts (
+    stream    in out nocopy stream_t
+  , cfRules   in ExcelTypes.CT_CfRules
+  );
     
   function new_context (
     p_sst_part  in blob
@@ -330,8 +340,8 @@ create or replace package xutl_xlsb is
   )
   return ExcelTableCellList;
   
-  --procedure read_all (file in blob);
-  --procedure read_formulas (file in blob);
+  procedure read_all (file in blob);
+  procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /
