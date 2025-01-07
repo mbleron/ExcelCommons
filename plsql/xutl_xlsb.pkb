@@ -3,7 +3,7 @@ create or replace package body xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2024 Marc Bleron
+  Copyright (c) 2018-2025 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -48,6 +48,7 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2024-05-01     Added sheet state, formula support
     Marc Bleron       2024-07-03     Themed color handling in make_BrtColor
     Marc Bleron       2024-08-16     Data validation
+    Marc Bleron       2024-09-06     Conditional formatting
 ========================================================================================== */
 
   -- Binary Record Types
@@ -100,8 +101,21 @@ create or replace package body xutl_xlsb is
   BRT_EXTERNSHEET       constant pls_integer := 362;
   BRT_ARRFMLA           constant pls_integer := 426;
   BRT_SHRFMLA           constant pls_integer := 427;
+  BRT_BEGINCONDFORMAT   constant pls_integer := 461;
+  BRT_ENDCONDFORMAT     constant pls_integer := 462;
+  BRT_BEGINCFRULE       constant pls_integer := 463;
+  BRT_ENDCFRULE         constant pls_integer := 464;
+  BRT_BEGINICONSET      constant pls_integer := 465;
+  BRT_ENDICONSET        constant pls_integer := 466;
+  BRT_BEGINDATABAR      constant pls_integer := 467;
+  BRT_ENDDATABAR        constant pls_integer := 468;
+  BRT_BEGINCOLORSCALE   constant pls_integer := 469;
+  BRT_ENDCOLORSCALE     constant pls_integer := 470;
+  BRT_CFVO              constant pls_integer := 471;
   BRT_WSFMTINFO         constant pls_integer := 485;
+  BRT_DXF               constant pls_integer := 507;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
+  BRT_COLOR             constant pls_integer := 564;
   BRT_BEGINDVALS        constant pls_integer := 573;
   BRT_ENDDVALS          constant pls_integer := 574;
   BRT_BEGINFMTS         constant pls_integer := 615;
@@ -615,6 +629,20 @@ create or replace package body xutl_xlsb is
     stream.available := stream.available - amount;
   end;
 
+  -- write some bytes to a raw buffer
+  procedure put (
+    buf    in out nocopy raw
+  , bytes  in raw
+  )
+  is
+  begin
+    if buf is null then
+      buf := bytes;
+    else
+      buf := utl_raw.overlay(bytes, buf, utl_raw.length(buf) + 1);
+    end if;
+  end;
+
   function new_record (
     rec_type     in pls_integer
   , content   in raw default null
@@ -1076,6 +1104,198 @@ create or replace package body xutl_xlsb is
     write_record(rec, 'FF');                  -- iLevel (ignored)
     write_XLWideString(rec, styleName);       -- stName
     return rec;
+  end;
+
+  -- 2.4.356 BrtDXF
+  function make_DXF (
+    dxf  in ExcelTypes.CT_Style
+  )
+  return record_t
+  is
+    rec     record_t := new_record(BRT_DXF);
+    xfProp  record_t;
+    cprops  pls_integer := 0;
+    
+    procedure put_xfProp is
+    begin
+      cprops := cprops + 1;
+      write_record(rec, utl_raw.concat( int2raw(xfProp.rt, 2)     -- xfPropType
+                                      , int2raw(xfProp.sz + 4, 2) -- cb
+                                      , xfProp.content_raw        -- xfPropDataBlob
+                                      ));
+    end;
+    
+  begin
+    write_record(rec, '0000'); -- unused + fNewBorder
+    -- 2.5.164 XFProps
+    write_record(rec, '0000'); -- reserved
+    write_record(rec, '0000'); -- cprops placeholder
+    -- xfPropArray [2.5.159 XFProp]
+    
+    if dxf.fill.fillType = ExcelTypes.FT_PATTERN then
+      
+      if dxf.fill.patternFill.patternType is not null then
+        
+        -- 2.5.51 FillPattern
+        xfProp := new_record(0);
+        write_record(xfProp, int2raw(ExcelTypes.getFillPatternTypeId(dxf.fill.patternFill.patternType), 1));
+        put_xfProp;
+        
+        if dxf.fill.patternFill.fgColor is not null then
+          xfProp := new_record(1);
+          write_record(xfProp, make_BrtColor(dxf.fill.patternFill.fgColor));
+          put_xfProp;
+        end if;
+
+        if dxf.fill.patternFill.bgColor is not null then
+          xfProp := new_record(2);
+          write_record(xfProp, make_BrtColor(dxf.fill.patternFill.bgColor));
+          put_xfProp;
+        end if;
+        
+      end if;
+      
+    elsif dxf.fill.fillType = ExcelTypes.FT_GRADIENT then
+      
+      -- 2.5.162 XFPropGradient
+      xfProp := new_record(3);
+      write_record(xfProp, '00000000');  -- type (0 = linear)
+      write_record(xfProp, utl_raw.cast_from_binary_double(dxf.fill.gradientFill.degree, utl_raw.little_endian)); -- numDegree
+      write_record(xfProp, '0000000000000000');  -- numFillToLeft
+      write_record(xfProp, '0000000000000000');  -- numFillToRight
+      write_record(xfProp, '0000000000000000');  -- numFillToTop
+      write_record(xfProp, '0000000000000000');  -- numFillToBottom
+      put_xfProp;
+      
+      -- 2.5.163 XFPropGradientStop
+      for i in 1 .. dxf.fill.gradientFill.stops.count loop
+        xfProp := new_record(4);
+        write_record(xfProp, '0000'); -- unused
+        write_record(xfProp, utl_raw.cast_from_binary_double(dxf.fill.gradientFill.stops(i).position, utl_raw.little_endian)); -- numPosition
+        write_record(xfProp, make_BrtColor(dxf.fill.gradientFill.stops(i).color)); -- color
+        put_xfProp;
+      end loop;
+          
+    end if;
+    
+    if dxf.font.color is not null then
+      xfProp := new_record(5, make_BrtColor(dxf.font.color));
+      put_xfProp;
+    end if;
+    
+    if dxf.border.top.style is not null then
+      xfProp := new_record(6);
+      write_record(xfProp, make_BrtColor(dxf.border.top.color));  -- color
+      write_record(xfProp, int2raw(ExcelTypes.getBorderStyleId(dxf.border.top.style), 2)); -- dgBorder
+      put_xfProp;
+    end if;
+
+    if dxf.border.bottom.style is not null then
+      xfProp := new_record(7);
+      write_record(xfProp, make_BrtColor(dxf.border.bottom.color));  -- color
+      write_record(xfProp, int2raw(ExcelTypes.getBorderStyleId(dxf.border.bottom.style), 2)); -- dgBorder
+      put_xfProp;
+    end if;
+    
+    if dxf.border.left.style is not null then
+      xfProp := new_record(8);
+      write_record(xfProp, make_BrtColor(dxf.border.left.color));  -- color
+      write_record(xfProp, int2raw(ExcelTypes.getBorderStyleId(dxf.border.left.style), 2)); -- dgBorder
+      put_xfProp;
+    end if;
+    
+    if dxf.border.right.style is not null then
+      xfProp := new_record(9);
+      write_record(xfProp, make_BrtColor(dxf.border.right.color));  -- color
+      write_record(xfProp, int2raw(ExcelTypes.getBorderStyleId(dxf.border.right.style), 2)); -- dgBorder
+      put_xfProp;
+    end if;
+    
+    if dxf.alignment.horizontal is not null then
+      xfProp := new_record(15, int2raw(ExcelTypes.getHorizontalAlignmentId(dxf.alignment.horizontal), 1));
+      put_xfProp;
+    end if;
+
+    if dxf.alignment.vertical is not null then
+      xfProp := new_record(16, int2raw(ExcelTypes.getVerticalAlignmentId(dxf.alignment.vertical), 1));
+      put_xfProp;
+    end if;
+
+    if dxf.alignment.textRotation is not null or dxf.alignment.verticalText then
+      xfProp := new_record(17);
+      if dxf.alignment.textRotation is not null then
+        write_record(xfProp, int2raw(round(dxf.alignment.textRotation), 1));
+      else
+        write_record(xfProp, 'FF');
+      end if;  -- trot
+      put_xfProp;
+    end if;
+    
+    if dxf.alignment.indent is not null then
+      xfProp := new_record(18, int2raw(round(dxf.alignment.indent), 2));
+      put_xfProp;
+    end if;
+    
+    if dxf.alignment.wrapText then
+      xfProp := new_record(20, '01');
+      put_xfProp;
+    end if;
+
+    if dxf.font.name is not null then
+      xfProp := new_record(24);
+      write_record(xfProp, int2raw(length(dxf.font.name), 2)); -- LPWideString.cchCharacters
+      write_record(xfProp, utl_i18n.string_to_raw(dxf.font.name, 'AL16UTF16LE')); -- LPWideString.rgchData
+      put_xfProp;
+    end if;
+    
+    if dxf.font.b is not null then
+      -- 2.5.6 Bold
+      xfProp := new_record(25, case when dxf.font.b then 'BC02' else '9001' end);
+      put_xfProp;
+    end if;
+    
+    if dxf.font.u is not null then
+      -- 2.5.157 Underline
+      xfProp := new_record(26, int2raw(ExcelTypes.getUnderlineStyleId(dxf.font.u), 2));
+      put_xfProp;
+    end if;
+    
+    if dxf.font.vertAlign is not null then
+      -- 2.5.131 Script
+      xfProp := new_record(27, int2raw(ExcelTypes.getFontVerticalAlignmentId(dxf.font.vertAlign), 2));
+      put_xfProp;
+    end if;
+    
+    if dxf.font.i is not null then
+      xfProp := new_record(28, case when dxf.font.i then '01' else '00' end);
+      put_xfProp;
+    end if;
+    
+    if dxf.font.strike is not null then
+      xfProp := new_record(29, case when dxf.font.strike then '01' else '00' end);
+      put_xfProp;
+    end if;
+    
+    if dxf.font.sz is not null then
+      xfProp := new_record(36, int2raw(dxf.font.sz * 20, 4));
+      put_xfProp;
+    end if;
+    
+    if dxf.numberFormat is not null then
+      xfProp := new_record(38);
+      write_record(xfProp, int2raw(length(dxf.numberFormat), 2));
+      write_record(xfProp, utl_i18n.string_to_raw(dxf.numberFormat, 'AL16UTF16LE'));
+      put_xfProp;
+      
+      xfProp := new_record(41, int2raw(dxf.numFmtId, 2));
+      put_xfProp;
+    end if;
+    
+    -- update cprops placeholder
+    rec.content_raw := utl_raw.overlay(int2raw(cprops, 2), rec.content_raw, 5);
+    
+    return rec;
+    
   end;
   
   function make_BundleSh (
@@ -1608,12 +1828,12 @@ create or replace package body xutl_xlsb is
                  , int2raw(16 * ExcelTypes.getDataValidationOpId(dvRule.operator), 1) -- typOperator << 4
                  ));
     write_record(rec, '00'); -- reserved
-    write_record(rec, int2raw(dvRule.sqref.count)); -- sqrfx.crfx
-    for i in 1 .. dvRule.sqref.count loop
-      write_record(rec, int2raw(dvRule.sqref(i).rwFirst - 1)); -- rgrfx[i].rwFirst
-      write_record(rec, int2raw(dvRule.sqref(i).rwLast - 1)); -- rgrfx[i].rwLast
-      write_record(rec, int2raw(dvRule.sqref(i).colFirst - 1)); -- rgrfx[i].colFirst
-      write_record(rec, int2raw(dvRule.sqref(i).colLast - 1)); -- rgrfx[i].colLast
+    write_record(rec, int2raw(dvRule.sqref.ranges.count)); -- sqrfx.crfx
+    for i in 1 .. dvRule.sqref.ranges.count loop
+      write_record(rec, int2raw(dvRule.sqref.ranges(i).rwFirst - 1)); -- rgrfx[i].rwFirst
+      write_record(rec, int2raw(dvRule.sqref.ranges(i).rwLast - 1)); -- rgrfx[i].rwLast
+      write_record(rec, int2raw(dvRule.sqref.ranges(i).colFirst - 1)); -- rgrfx[i].colFirst
+      write_record(rec, int2raw(dvRule.sqref.ranges(i).colLast - 1)); -- rgrfx[i].colLast
     end loop;
     
     write_XLWideString(rec, dvRule.errorTitle, nullable => true);  -- DValStrings.strErrorTitle
@@ -1627,9 +1847,157 @@ create or replace package body xutl_xlsb is
       valType := false;
     end if;
     
-    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla1, ExcelFmla.FMLATYPE_DATAVAL, dvRule.activeCellRef, dvRule.refStyle1, valType));
-    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla2, ExcelFmla.FMLATYPE_DATAVAL, dvRule.activeCellRef, dvRule.refStyle2));
+    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla1, ExcelFmla.FMLATYPE_DATAVAL, dvRule.sqref.lastRangeCellRef, dvRule.refStyle1, valType));
+    write_record(rec, ExcelFmla.parseBinary(dvRule.fmla2, ExcelFmla.FMLATYPE_DATAVAL, dvRule.sqref.lastRangeCellRef, dvRule.refStyle2));
         
+    return rec;
+  end;
+  
+  -- 2.4.23 BrtBeginCFRule
+  function make_BeginCFRule (
+    rule  in ExcelTypes.CT_CfRule
+  , pos   in pls_integer
+  )
+  return record_T
+  is
+    rec  record_t := new_record(BRT_BEGINCFRULE);
+  begin
+    write_record(rec, int2raw(rule.type)); -- iType
+    write_record(rec, int2raw(rule.template)); -- iTemplate
+    write_record(rec, int2raw(nvl(rule.dxfId, -1))); -- dxfId
+    write_record(rec, int2raw(pos)); -- iPri
+    write_record(rec, int2raw(nvl(rule.param, 0))); -- iParam
+    write_record(rec, '0000000000000000'); -- reserved1 + reserved2
+    write_record(rec, bitVector(b0 => 0 -- reserved3
+                              , b1 => case when rule.stopTrue then 1 else 0 end -- fStopTrue
+                              , b2 => case when rule.template in (ExcelTypes.CF_TEMP_ABOVEAVERAGE, ExcelTypes.CF_TEMP_EQUALABOVEAVERAGE) then 1 else 0 end -- fAbove
+                              , b3 => case when rule.bottom then 1 else 0 end -- fBottom
+                              , b4 => case when rule.percent then 1 else 0 end -- fPercent
+                              ));
+    write_record(rec, '00'); -- last 8 bits of reserved4
+    
+    write_record(rec, int2raw(case when rule.fmla1 is null then 0 else 1 end)); -- cbFmla1
+    write_record(rec, int2raw(case when rule.fmla2 is null then 0 else 1 end)); -- cbFmla2
+    write_record(rec, int2raw(case when rule.fmla3 is null then 0 else 1 end)); -- cbFmla3
+    
+    write_XLWideString(rec, rule.strParam, nullable => true); -- strParam
+    
+    -- rgce1
+    if rule.fmla1 is not null then
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla1, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle1));
+    end if;
+
+    -- rgce2
+    if rule.fmla2 is not null then
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla2, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle2));
+    end if;
+    
+    -- rgce3
+    if rule.fmla3 is not null then
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla3, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle3));
+    end if;
+    
+    return rec;
+    
+  end;
+  
+  -- 2.4.331 BrtCFVO
+  function make_CFVO (
+    cfvo    in ExcelTypes.CT_Cfvo
+  , cfType  in pls_integer
+  )
+  return record_t
+  is
+    decimalSep  constant varchar2(1) := substr(ExcelFmla.getNLS('NLS_NUMERIC_CHARACTERS'), 1, 1);
+    rec         record_t := new_record(BRT_CFVO);
+    numParam    binary_double;
+    fmla        raw(32767);
+    cbFmla      raw(4);
+  begin
+    write_record(rec, int2raw(cfvo.type)); -- iType
+    
+    if cfvo.type in (ExcelTypes.CFVO_NUM, ExcelTypes.CFVO_PERCENT, ExcelTypes.CFVO_PERCENTILE) then
+      -- check if this CFVO value is a valid number
+      begin
+        numParam := to_binary_double(replace(cfvo.value, '.', decimalSep));
+      exception
+        when value_error then
+          null;
+      end;
+    end if;
+    write_record(rec, utl_raw.cast_from_binary_double(nvl(numParam, 0), utl_raw.little_endian)); -- numParam
+    write_record(rec, int2raw(case when cfType = ExcelTypes.CF_TYPE_MULTISTATE then 1 else 0 end)); -- fSaveGTE
+    write_record(rec, int2raw(case when nvl(cfvo.gte, true) then 1 else 0 end)); -- fGTE
+    
+    if numParam is null then
+      fmla := ExcelFmla.parseBinary(cfvo.value, ExcelFmla.FMLATYPE_CELL, p_refStyle => cfvo.refStyle);
+      cbFmla := utl_raw.substr(fmla, 1, 4); -- cbFmla = formula.cce
+    else
+      cbFmla := '00000000';
+    end if;
+    
+    write_record(rec, cbFmla);
+    write_record(rec, fmla); -- formula
+    
+    return rec;
+  end;
+  
+  -- 2.4.43 BrtBeginDatabar
+  function make_BeginDatabar (
+    showValue  in boolean
+  )
+  return record_t
+  is
+    rec   record_t := new_record(BRT_BEGINDATABAR);
+  begin
+    write_record(rec, int2raw(10,1)); -- bLenMin: 10% by default
+    write_record(rec, int2raw(90,1)); -- bLenMax: 90% by default
+    write_record(rec, case when showValue then '01' else '00' end); -- fShowValue
+    return rec;
+  end;
+
+  -- 2.4.91 BrtBeginIconSet
+  function make_BeginIconSet (
+    iconSet    in pls_integer
+  , hideValue  in boolean
+  , reverse    in boolean
+  )
+  return record_t
+  is
+    rec   record_t := new_record(BRT_BEGINICONSET);
+  begin
+    write_record(rec, int2raw(iconSet)); -- iSet
+    write_record(rec, bitVector(
+                        b0 => 0 -- reserved1
+                      , b1 => case when hideValue then 1 else 0 end -- fIcon
+                      , b2 => case when reverse then 1 else 0 end -- fReverse (warning! the specs have it the wrong way around)
+                      --, 0, 0, 0, 0 -- unused1-4 
+                      ));
+    write_record(rec, '00'); -- reserved2
+    return rec;
+  end;
+  
+  -- 2.4.34 BrtBeginConditionalFormatting
+  function make_BeginCondFormat (
+    cfRule  in ExcelTypes.CT_CfRule
+  )
+  return record_t
+  is
+    rec   record_t := new_record(BRT_BEGINCONDFORMAT);
+  begin
+    write_record(rec, int2raw(1)); -- ccf
+    write_record(rec, '00000000'); -- fPivot
+    -- sqrfx
+    -- 2.5.156 UncheckedSqRfX
+    write_record(rec, int2raw(cfRule.sqref.ranges.count)); -- crfx
+    for i in 1 .. cfRule.sqref.ranges.count loop
+      write_record(rec, make_RfX(
+                          cfRule.sqref.ranges(i).rwFirst - 1
+                        , cfRule.sqref.ranges(i).colFirst - 1
+                        , cfRule.sqref.ranges(i).rwLast - 1
+                        , cfRule.sqref.ranges(i).colLast - 1
+                        ));
+    end loop;
     return rec;
   end;
   
@@ -1960,6 +2328,15 @@ create or replace package body xutl_xlsb is
                ));    
   end;
 
+  procedure put_DXF (
+    stream  in out nocopy stream_t
+  , style   in ExcelTypes.CT_Style
+  )
+  is
+  begin
+    put_record(stream, make_DXF(style));    
+  end;
+
   procedure put_ColInfo (
     stream         in out nocopy stream_t
   , colId          in pls_integer
@@ -2093,6 +2470,75 @@ create or replace package body xutl_xlsb is
       put_record(stream, make_DVal(dvRules(i)));
     end loop;
     put_simple_record(stream, BRT_ENDDVALS);
+  end;
+
+  procedure put_CFRule (
+    stream  in out nocopy stream_t
+  , rule    in ExcelTypes.CT_CfRule
+  , pos     in pls_integer
+  )
+  is
+  begin
+    put_record(stream, make_BeginCFRule(rule, pos)); -- BrtBeginCFRule
+    
+    case rule.type
+    when ExcelTypes.CF_TYPE_GRADIENT then
+      
+      put_simple_record(stream, BRT_BEGINCOLORSCALE);
+      
+      -- BrtCFVO
+      for i in 1 .. rule.cfvoList.count loop
+        put_record(stream, make_CFVO(rule.cfvoList(i), rule.type));
+      end loop;
+      
+      -- BrtColor
+      for i in 1 .. rule.cfvoList.count loop
+        put_simple_record(stream, BRT_COLOR, make_BrtColor(rule.cfvoList(i).color));
+      end loop;      
+      
+      put_simple_record(stream, BRT_ENDCOLORSCALE);
+    
+    when ExcelTypes.CF_TYPE_DATABAR then
+      
+      put_record(stream, make_BeginDatabar(not rule.hideValue));
+      
+      put_record(stream, make_CFVO(rule.cfvoList(1), rule.type)); -- minimum value
+      put_record(stream, make_CFVO(rule.cfvoList(2), rule.type)); -- maximum value
+      put_simple_record(stream, BRT_COLOR, make_BrtColor(rule.cfvoList(3).color)); -- bar color
+    
+      put_simple_record(stream, BRT_ENDDATABAR);
+    
+    when ExcelTypes.CF_TYPE_MULTISTATE then
+      
+      put_record(stream, make_BeginIconSet(rule.iconSet, rule.hideValue, rule.reverse));
+      
+      -- BrtCFVO
+      -- first CFVO must be a dummy one, which appears to default to this : 
+      put_record(stream, make_CFVO(ExcelTypes.makeCfvo(ExcelTypes.CFVO_PERCENT, 0, true), rule.type));
+      for i in 1 .. rule.cfvoList.count loop
+        put_record(stream, make_CFVO(rule.cfvoList(i), rule.type));
+      end loop;      
+      
+      put_simple_record(stream, BRT_ENDICONSET);
+    
+    else
+      null;
+    end case;
+    
+    put_simple_record(stream, BRT_ENDCFRULE); -- BrtEndCFRule
+  end;
+
+  procedure put_CondFmts (
+    stream    in out nocopy stream_t
+  , cfRules   in ExcelTypes.CT_CfRules
+  )
+  is
+  begin
+    for i in 1 .. cfRules.count loop
+      put_record(stream, make_BeginCondFormat(cfRules(i))); -- BrtBeginConditionalFormatting
+      put_CFRule(stream, cfRules(i), i);
+      put_simple_record(stream, BRT_ENDCONDFORMAT); -- BrtEndConditionalFormatting
+    end loop;
   end;
 
   -- convert a 0-based column number to base26 string

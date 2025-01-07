@@ -260,3 +260,4 @@ id;name;internalName;volatile;returnClass;minParamCount;maxParamCount;params
 483;AVERAGEIF;AVERAGEIF;0;V;2;3;RO|VR|RO
 484;AVERAGEIFS;AVERAGEIFS;0;V;3;-1;RO|RO|VR
 255;IMAGE;_xlfn.IMAGE;0;V;1;5;VR
+449;EDATE;EDATE;0;V;2;2;RR

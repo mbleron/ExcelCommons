@@ -5,7 +5,7 @@ create or replace package body ExcelFmla is
   License, v. 2.0. If a copy of the MPL was not distributed with this 
   file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-  Copyright (c) 2023-2024 Marc Bleron
+  Copyright (c) 2023-2025 Marc Bleron
   
   This file incorporates work ported to PL/SQL from the LibreOffice project:
   * procedure transformOperand adapted from XclExpFmlaCompImpl::RecalcTokenClass 
@@ -18,6 +18,7 @@ create or replace package body ExcelFmla is
     Marc Bleron       2023-10-01     Creation
     Marc Bleron       2024-08-15     Added Excel IMAGE function
     Marc Bleron       2024-08-16     Data validation feature
+    Marc Bleron       2025-01-07     Conditional Formatting
 ====================================================================================== */
 
   PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
@@ -226,7 +227,6 @@ create or replace package body ExcelFmla is
   /** Type of a formula. */
   --enum XclFormulaType
   FMLATYPE_MATRIX   constant pls_integer := 1;
-  FMLATYPE_CONDFMT  constant pls_integer := 3;
   --FMLATYPE_CHART    constant pls_integer := 6;
   --FMLATYPE_LISTVAL  constant pls_integer := 9;
 
@@ -242,28 +242,28 @@ create or replace package body ExcelFmla is
   ERR_UNSCOPED_REF      constant varchar2(256) := 'Unscoped cell reference';
 
   FUNCTIONS             constant varchar2(32767) :=
-'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
-ULbcP98ZDEGJyebC9T9Tr1jptBAAAA==';
+'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';
   
   subtype nodeHandle is pls_integer;
   type nodeHandleList_t is table of nodeHandle;
@@ -1588,8 +1588,8 @@ ULbcP98ZDEGJyebC9T9Tr1jptBAAAA==';
     localRef  area3d_t := refValue;
   begin
     if not(localRef.area.firstCell.col.isAbsolute and localRef.area.firstCell.rw.isAbsolute)
-       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
-             or ctx.config.fmlaType = FMLATYPE_DATAVAL ) 
+       and ( ctx.binary and ctx.config.fmlaType in (FMLATYPE_SHARED, FMLATYPE_CONDFMT)
+             or ctx.config.fmlaType in (FMLATYPE_DATAVAL) ) 
     then
       ptgType := PTG_REFN_R;
       
@@ -1627,8 +1627,8 @@ ULbcP98ZDEGJyebC9T9Tr1jptBAAAA==';
   begin
     if not(localArea.area.firstCell.col.isAbsolute and localArea.area.firstCell.rw.isAbsolute
            and localArea.area.lastCell.col.isAbsolute and localArea.area.lastCell.rw.isAbsolute)
-       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
-             or ctx.config.fmlaType = FMLATYPE_DATAVAL )
+       and ( ctx.binary and ctx.config.fmlaType in (FMLATYPE_SHARED, FMLATYPE_CONDFMT)
+             or ctx.config.fmlaType in (FMLATYPE_DATAVAL) )
     then
       ptgType := PTG_AREAN_R;
 
@@ -3965,7 +3965,11 @@ ULbcP98ZDEGJyebC9T9Tr1jptBAAAA==';
 
   procedure putStr (str in varchar2) is
   begin
-    putBytes(utl_raw.concat(toBin(length(str),2), utl_i18n.string_to_raw(str, 'AL16UTF16LE')));
+    if str is not null then
+      putBytes(utl_raw.concat(toBin(length(str),2), utl_i18n.string_to_raw(str, 'AL16UTF16LE')));
+    else
+      putBytes('0000');
+    end if;
   end;
   
   -- 2.5.98.23 PtgArray
