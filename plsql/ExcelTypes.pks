@@ -3,7 +3,7 @@ create or replace package ExcelTypes is
 
   MIT License
 
-  Copyright (c) 2021-2024 Marc Bleron
+  Copyright (c) 2021-2025 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -319,14 +319,11 @@ create or replace package ExcelTypes is
   , showErrorMessage  boolean
   , showInputMessage  boolean
   , sqref             cellRangeSeq_t
-  --, sqref             cellRangeList_t
-  --, activeCellRef     varchar2(10)
   , type              varchar2(128)
   , fmla1             varchar2(8192)
   , fmla2             varchar2(8192)
   , refStyle1         pls_integer
   , refStyle2         pls_integer
-  --, internalCellRef   varchar2(10)
   );
   
   type CT_DataValidations is table of CT_DataValidation;
@@ -336,6 +333,7 @@ create or replace package ExcelTypes is
   , value     varchar2(8192)
   , gte       boolean
   , color     varchar2(256)
+  , refStyle  pls_integer
   );
   
   type CT_CfvoList is table of CT_Cfvo;
@@ -358,6 +356,9 @@ create or replace package ExcelTypes is
   , hideValue  boolean
   , iconSet    pls_integer
   , reverse    boolean
+  , refStyle1  pls_integer
+  , refStyle2  pls_integer
+  , refStyle3  pls_integer
   );
   
   type CT_CfRules is table of CT_CfRule;
@@ -399,10 +400,11 @@ create or replace package ExcelTypes is
   function getCondFmtVOType (p_cfvoType in pls_integer) return varchar2;
 
   function makeCfvo (
-    p_type   in pls_integer default null
-  , p_value  in varchar2 default null
-  , p_gte    in boolean default null
-  , p_color  in varchar2 default null
+    p_type      in pls_integer default null
+  , p_value     in varchar2 default null
+  , p_gte       in boolean default null
+  , p_color     in varchar2 default null
+  , p_refStyle  in pls_integer default null
   )
   return CT_Cfvo;
 

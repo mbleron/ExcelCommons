@@ -3,7 +3,7 @@ create or replace package xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2024 Marc Bleron
+  Copyright (c) 2018-2025 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -47,6 +47,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2024-02-23     Added font strikethrough, text rotation, indent
     Marc Bleron       2024-05-01     Added sheet state, formula support
     Marc Bleron       2024-08-16     Data validation
+    Marc Bleron       2024-09-06     Conditional formatting
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -339,9 +340,6 @@ create or replace package xutl_xlsb is
   , p_nrows   in pls_integer
   )
   return ExcelTableCellList;
-  
-  procedure read_all (file in blob);
-  procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /

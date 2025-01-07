@@ -5,7 +5,7 @@ create or replace package body ExcelFmla is
   License, v. 2.0. If a copy of the MPL was not distributed with this 
   file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-  Copyright (c) 2023-2024 Marc Bleron
+  Copyright (c) 2023-2025 Marc Bleron
   
   This file incorporates work ported to PL/SQL from the LibreOffice project:
   * procedure transformOperand adapted from XclExpFmlaCompImpl::RecalcTokenClass 
@@ -18,6 +18,7 @@ create or replace package body ExcelFmla is
     Marc Bleron       2023-10-01     Creation
     Marc Bleron       2024-08-15     Added Excel IMAGE function
     Marc Bleron       2024-08-16     Data validation feature
+    Marc Bleron       2025-01-07     Conditional Formatting
 ====================================================================================== */
 
   PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
@@ -1587,8 +1588,8 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
     localRef  area3d_t := refValue;
   begin
     if not(localRef.area.firstCell.col.isAbsolute and localRef.area.firstCell.rw.isAbsolute)
-       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
-             or ctx.config.fmlaType in (FMLATYPE_DATAVAL, FMLATYPE_CONDFMT) ) 
+       and ( ctx.binary and ctx.config.fmlaType in (FMLATYPE_SHARED, FMLATYPE_CONDFMT)
+             or ctx.config.fmlaType in (FMLATYPE_DATAVAL) ) 
     then
       ptgType := PTG_REFN_R;
       
@@ -3964,7 +3965,11 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
 
   procedure putStr (str in varchar2) is
   begin
-    putBytes(utl_raw.concat(toBin(length(str),2), utl_i18n.string_to_raw(str, 'AL16UTF16LE')));
+    if str is not null then
+      putBytes(utl_raw.concat(toBin(length(str),2), utl_i18n.string_to_raw(str, 'AL16UTF16LE')));
+    else
+      putBytes('0000');
+    end if;
   end;
   
   -- 2.5.98.23 PtgArray

@@ -3,7 +3,7 @@ create or replace package body ExcelTypes is
 
   MIT License
 
-  Copyright (c) 2021-2024 Marc Bleron
+  Copyright (c) 2021-2025 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -736,10 +736,11 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   end;
 
   function makeCfvo (
-    p_type   in pls_integer default null
-  , p_value  in varchar2 default null
-  , p_gte    in boolean default null
-  , p_color  in varchar2 default null
+    p_type      in pls_integer default null
+  , p_value     in varchar2 default null
+  , p_gte       in boolean default null
+  , p_color     in varchar2 default null
+  , p_refStyle  in pls_integer default null
   )
   return CT_Cfvo
   is
@@ -749,6 +750,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     cfvo.value := p_value;
     cfvo.gte := p_gte;
     cfvo.color := p_color;
+    cfvo.refStyle := p_refStyle;
     return cfvo;
   end;
 
@@ -1048,14 +1050,18 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     case fill.fillType
     when FT_PATTERN then
       
-      stringWrite(fill.content, '<fill><patternFill patternType="'||fill.patternFill.patternType||'">');
-      if fill.patternFill.fgColor is not null then
-        stringWrite(fill.content, '<fgColor rgb="'||fill.patternFill.fgColor||'"/>');
+      if fill.patternFill.patternType is not null then
+        
+        stringWrite(fill.content, '<fill><patternFill patternType="'||fill.patternFill.patternType||'">');
+        if fill.patternFill.fgColor is not null then
+          stringWrite(fill.content, '<fgColor rgb="'||fill.patternFill.fgColor||'"/>');
+        end if;
+        if fill.patternFill.bgColor is not null then
+          stringWrite(fill.content, '<bgColor rgb="'||fill.patternFill.bgColor||'"/>');
+        end if;
+        stringWrite(fill.content, '</patternFill></fill>');
+        
       end if;
-      if fill.patternFill.bgColor is not null then
-        stringWrite(fill.content, '<bgColor rgb="'||fill.patternFill.bgColor||'"/>');
-      end if;
-      stringWrite(fill.content, '</patternFill></fill>');
       
     when FT_GRADIENT then
       
@@ -1440,7 +1446,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     mergedFill  CT_Fill := fill;
   begin
     -- if not set, apply patternType from master
-    if mergedFill.patternFill.patternType = 'none' then
+    if mergedFill.patternFill.patternType is null or mergedFill.patternFill.patternType = 'none' then
       mergedFill.patternFill.patternType := masterFill.patternFill.patternType;
     end if;
     
@@ -4026,14 +4032,13 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     
       if css.msoPattern.patternType = 'none' then
       
-        --fill.patternFill.patternType := 'solid';
         fill.patternFill.fgColor := validateColor(css.backgroundColor);
         fill.patternFill.bgColor := validateColor(css.msoPattern.color);
         
         if fill.patternFill.fgColor is not null or fill.patternFill.bgColor is not null then
           fill.patternFill.patternType := 'solid';
-        else
-          fill.patternFill.patternType := 'none';
+        --else
+        --  fill.patternFill.patternType := 'none';
         end if;
         
       elsif css.msoPattern.patternType is not null then

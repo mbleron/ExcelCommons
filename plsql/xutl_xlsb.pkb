@@ -3,7 +3,7 @@ create or replace package body xutl_xlsb is
 
   MIT License
 
-  Copyright (c) 2018-2024 Marc Bleron
+  Copyright (c) 2018-2025 Marc Bleron
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -1134,21 +1134,25 @@ create or replace package body xutl_xlsb is
     
     if dxf.fill.fillType = ExcelTypes.FT_PATTERN then
       
-      -- 2.5.51 FillPattern
-      xfProp := new_record(0);
-      write_record(xfProp, int2raw(ExcelTypes.getFillPatternTypeId(dxf.fill.patternFill.patternType), 1));
-      put_xfProp;
-      
-      if dxf.fill.patternFill.fgColor is not null then
-        xfProp := new_record(1);
-        write_record(xfProp, make_BrtColor(dxf.fill.patternFill.fgColor));
+      if dxf.fill.patternFill.patternType is not null then
+        
+        -- 2.5.51 FillPattern
+        xfProp := new_record(0);
+        write_record(xfProp, int2raw(ExcelTypes.getFillPatternTypeId(dxf.fill.patternFill.patternType), 1));
         put_xfProp;
-      end if;
+        
+        if dxf.fill.patternFill.fgColor is not null then
+          xfProp := new_record(1);
+          write_record(xfProp, make_BrtColor(dxf.fill.patternFill.fgColor));
+          put_xfProp;
+        end if;
 
-      if dxf.fill.patternFill.bgColor is not null then
-        xfProp := new_record(2);
-        write_record(xfProp, make_BrtColor(dxf.fill.patternFill.bgColor));
-        put_xfProp;
+        if dxf.fill.patternFill.bgColor is not null then
+          xfProp := new_record(2);
+          write_record(xfProp, make_BrtColor(dxf.fill.patternFill.bgColor));
+          put_xfProp;
+        end if;
+        
       end if;
       
     elsif dxf.fill.fillType = ExcelTypes.FT_GRADIENT then
@@ -1880,17 +1884,17 @@ create or replace package body xutl_xlsb is
     
     -- rgce1
     if rule.fmla1 is not null then
-      write_record(rec, ExcelFmla.parseBinary(rule.fmla1, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef));
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla1, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle1));
     end if;
 
     -- rgce2
     if rule.fmla2 is not null then
-      write_record(rec, ExcelFmla.parseBinary(rule.fmla2, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef));
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla2, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle2));
     end if;
     
     -- rgce3
     if rule.fmla3 is not null then
-      write_record(rec, ExcelFmla.parseBinary(rule.fmla3, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef));
+      write_record(rec, ExcelFmla.parseBinary(rule.fmla3, ExcelFmla.FMLATYPE_CONDFMT, rule.sqref.boundingAreaFirstCellRef, rule.refStyle3));
     end if;
     
     return rec;
@@ -1908,6 +1912,7 @@ create or replace package body xutl_xlsb is
     rec         record_t := new_record(BRT_CFVO);
     numParam    binary_double;
     fmla        raw(32767);
+    cbFmla      raw(4);
   begin
     write_record(rec, int2raw(cfvo.type)); -- iType
     
@@ -1925,10 +1930,13 @@ create or replace package body xutl_xlsb is
     write_record(rec, int2raw(case when nvl(cfvo.gte, true) then 1 else 0 end)); -- fGTE
     
     if numParam is null then
-      fmla := ExcelFmla.parseBinary(cfvo.value, ExcelFmla.FMLATYPE_CELL);
+      fmla := ExcelFmla.parseBinary(cfvo.value, ExcelFmla.FMLATYPE_CELL, p_refStyle => cfvo.refStyle);
+      cbFmla := utl_raw.substr(fmla, 1, 4); -- cbFmla = formula.cce
+    else
+      cbFmla := '00000000';
     end if;
     
-    write_record(rec, utl_raw.substr(fmla, 1, 4)); -- cbFmla = formula.cce
+    write_record(rec, cbFmla);
     write_record(rec, fmla); -- formula
     
     return rec;
@@ -1984,10 +1992,10 @@ create or replace package body xutl_xlsb is
     write_record(rec, int2raw(cfRule.sqref.ranges.count)); -- crfx
     for i in 1 .. cfRule.sqref.ranges.count loop
       write_record(rec, make_RfX(
-                          cfRule.sqref.ranges(i).rwFirst
-                        , cfRule.sqref.ranges(i).rwLast
-                        , cfRule.sqref.ranges(i).colFirst
-                        , cfRule.sqref.ranges(i).colLast
+                          cfRule.sqref.ranges(i).rwFirst - 1
+                        , cfRule.sqref.ranges(i).colFirst - 1
+                        , cfRule.sqref.ranges(i).rwLast - 1
+                        , cfRule.sqref.ranges(i).colLast - 1
                         ));
     end loop;
     return rec;
