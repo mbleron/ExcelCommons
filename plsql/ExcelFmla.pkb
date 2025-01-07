@@ -1627,8 +1627,8 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   begin
     if not(localArea.area.firstCell.col.isAbsolute and localArea.area.firstCell.rw.isAbsolute
            and localArea.area.lastCell.col.isAbsolute and localArea.area.lastCell.rw.isAbsolute)
-       and ( ctx.config.fmlaType = FMLATYPE_SHARED and ctx.binary
-             or ctx.config.fmlaType in (FMLATYPE_DATAVAL, FMLATYPE_CONDFMT) )
+       and ( ctx.binary and ctx.config.fmlaType in (FMLATYPE_SHARED, FMLATYPE_CONDFMT)
+             or ctx.config.fmlaType in (FMLATYPE_DATAVAL) )
     then
       ptgType := PTG_AREAN_R;
 
