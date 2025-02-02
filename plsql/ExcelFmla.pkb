@@ -19,6 +19,7 @@ create or replace package body ExcelFmla is
     Marc Bleron       2024-08-15     Added Excel IMAGE function
     Marc Bleron       2024-08-16     Data validation feature
     Marc Bleron       2025-01-07     Conditional Formatting
+    Marc Bleron       2025-01-18     Internal name storage
 ====================================================================================== */
 
   PTG_EXP       constant pls_integer := 1;   -- 0x01 PtgExp
@@ -1116,7 +1117,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
     return ctx.sheetMap(upper(sheetName));
   end;
   
-  function putName (value in varchar2, sheetName in varchar2 default null, idx in pls_integer default null)
+  function putNameEntry (value in varchar2, sheetName in varchar2 default null, idx in pls_integer default null)
   return name_t
   is
     nm       name_t;
@@ -1137,10 +1138,10 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
     return nm;
   end;
 
-  procedure putName (value in varchar2, sheetName in varchar2 default null, idx in pls_integer default null) is
+  procedure putNameEntry (value in varchar2, sheetName in varchar2 default null, idx in pls_integer default null) is
     nm  name_t;
   begin
-    nm := putName(value, sheetName, idx);
+    nm := putNameEntry(value, sheetName, idx);
   end;
 
   procedure putSheet (name in varchar2, idx in pls_integer default null) is
@@ -3921,8 +3922,8 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   -- 2.2.7 External References
   function putExternal (
     supLink     in pls_integer
-  , firstSheet  in pls_integer
-  , lastSheet   in pls_integer default null
+  , firstSheet  in sheet_t
+  , lastSheet   in sheet_t default null
   )
   return pls_integer
   is
@@ -3940,9 +3941,18 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
     end if;
 
     -- 2.5.173 Xti
-    xti.firstSheet := firstSheet;
-    xti.lastSheet := nvl(lastSheet, firstSheet);
-    xtiKey := rawtohex(utl_raw.concat(toBin(xti.externalLink), toBin(xti.firstSheet), toBin(xti.lastSheet)));
+    xti.firstSheet.idx := firstSheet.idx;
+    xti.firstSheet.name := firstSheet.name;
+    
+    if lastSheet.idx is not null then
+      xti.lastSheet.idx := lastSheet.idx;
+      xti.lastSheet.name := lastSheet.name;
+    else
+      xti.lastSheet.idx := firstSheet.idx;
+      xti.lastSheet.name := firstSheet.name;
+    end if;
+    
+    xtiKey := rawtohex(utl_raw.concat(toBin(xti.externalLink), toBin(xti.firstSheet.idx), toBin(xti.lastSheet.idx)));
     
     if ctx.externals.xtiMap.exists(xtiKey) then
       xti := ctx.externals.xtiMap(xtiKey);
@@ -4194,8 +4204,15 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
 
   -- 2.5.98.61 PtgNameX
   procedure putPtgNameX (name in name_t) is
-    ixti  pls_integer := putExternal(357 /*BrtSupSelf*/, -2);
+    ixti   pls_integer;
+    sheet  sheet_t;
   begin
+    -- A PtgNameX represents an external name reference that is serialized with scope information in the formula text, e.g. sheet1!MyName
+    -- (NB: ExcelFmla supports only references from the same workbook)
+    -- Counterintuitively, it's OK to have a workbook-level xti here rather than specifying the actual sheet scope.
+    -- Since we're declaring a PtgNameX, Excel will know that we're using a scoped name reference and include the scope from the name definition directly
+    sheet.idx := -2; -- workbook-level reference (see 2.5.173 Xti)
+    ixti := putExternal(357, sheet); -- BrtSupSelf
     putBytes(toBin(ixti, 2));   -- ixti
     putBytes(toBin(name.idx));  -- nameindex
   end;
@@ -4204,7 +4221,6 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   is
     definedName  ExcelTypes.CT_DefinedName;
   begin
-    ctx.definedNames.extend;
     
     definedName.idx := nm.idx;
     definedName.name := nm.value;
@@ -4212,6 +4228,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
     definedName.hidden := true;
     definedName.futureFunction := true;
     
+    ctx.definedNames.extend;
     ctx.definedNames(ctx.definedNames.last) := definedName;
     
   end;
@@ -4238,7 +4255,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
         if ctx.nameMap.exists(upper(funcMeta.internalName)) then
           xlfnName := ctx.nameMap(upper(funcMeta.internalName));
         else
-          xlfnName := putName(funcMeta.internalName);
+          xlfnName := putNameEntry(funcMeta.internalName);
           put_xlfnName(xlfnName);
         end if;
         -- PtgName
@@ -4259,7 +4276,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   end;
   
   procedure putRef3d (ref3d in area3d_t) is
-    ixti  pls_integer := putExternal(357, ref3d.prefix.sheetRange.firstSheet.idx, ref3d.prefix.sheetRange.lastSheet.idx);
+    ixti  pls_integer := putExternal(357, ref3d.prefix.sheetRange.firstSheet, ref3d.prefix.sheetRange.lastSheet);
   begin
     putBytes(toBin(ixti, 2));
     -- loc
@@ -4271,7 +4288,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   end;
 
   procedure putArea3d (area3d in area3d_t) is
-    ixti  pls_integer := putExternal(357, area3d.prefix.sheetRange.firstSheet.idx, area3d.prefix.sheetRange.lastSheet.idx);
+    ixti  pls_integer := putExternal(357, area3d.prefix.sheetRange.firstSheet, area3d.prefix.sheetRange.lastSheet);
   begin
     putBytes(toBin(ixti, 2));
     -- area
@@ -4435,6 +4452,17 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
         
   end;
   
+  procedure addDefinedName (
+    p_name  in ExcelTypes.CT_DefinedName 
+  )
+  is
+  begin
+    ctx.definedNames.extend;
+    ctx.definedNames(ctx.definedNames.last) := p_name;
+    debug(p_name.scope);
+    putNameEntry(p_name.name, p_name.scope);
+  end;
+  
   procedure setContext (
     p_sheets  in ExcelTypes.CT_Sheets
   , p_names   in ExcelTypes.CT_DefinedNames
@@ -4451,9 +4479,10 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
       putSheet(p_sheets(i).name, p_sheets(i).idx);
     end loop;
     
+    ctx.definedNames := nvl(p_names, ExcelTypes.CT_DefinedNames());
     ctx.nameMap.delete;
     for i in 1 .. p_names.count loop
-      putName(p_names(i).name, p_names(i).scope, p_names(i).idx);
+      putNameEntry(p_names(i).name, p_names(i).scope, p_names(i).idx);
     end loop;
     
   end;
@@ -4495,7 +4524,7 @@ NtTb5mqygrLlPnxn0AUlJptz1/8AMm+N6MMQAAA=';
   begin
     setFormulaType(nvl(p_type, FMLATYPE_CELL), p_valType);
     setCurrentCell(nvl(p_cellRef, 'A1'));
-    ctx.definedNames := ExcelTypes.CT_DefinedNames();
+    --ctx.definedNames := ExcelTypes.CT_DefinedNames();
     ctx.volatile := false;
     ctx.binary := true;
     ctx.refStyle := nvl(p_refStyle, REF_A1);

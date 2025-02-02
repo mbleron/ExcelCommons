@@ -49,6 +49,7 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2024-07-03     Themed color handling in make_BrtColor
     Marc Bleron       2024-08-16     Data validation
     Marc Bleron       2024-09-06     Conditional formatting
+    Marc Bleron       2025-01-26     Sheet indices update
 ========================================================================================== */
 
   -- Binary Record Types
@@ -224,7 +225,7 @@ create or replace package body xutl_xlsb is
   
   type dateXfMap_t is table of ExcelTypes.CT_NumFmt index by pls_integer;
   
-  type sheetMap_t is table of pls_integer index by varchar2(128);
+  type sheetMap_t is table of pls_integer index by varchar2(128); -- sheet indices indexed by sheet names
   type shrFmla_t is record (ptgExp raw(32767), pos integer);
   type shrFmlaMap_t is table of shrFmla_t index by pls_integer; -- shared formula info indexed by shared index (si) 
   
@@ -1324,10 +1325,10 @@ create or replace package body xutl_xlsb is
   begin
     write_record(rec, int2raw(xtiArray.count));  -- cXti
     for i in 1 .. xtiArray.count loop
-      -- Xti : 
-      write_record(rec, int2raw(xtiArray(i).externalLink));  -- externalLink
-      write_record(rec, int2raw(xtiArray(i).firstSheet - 1)); -- firstSheet
-      write_record(rec, int2raw(xtiArray(i).lastSheet - 1));  -- lastSheet
+      -- 2.5.173 Xti : 
+      write_record(rec, int2raw(xtiArray(i).externalLink));
+      write_record(rec, int2raw(xtiArray(i).firstSheet.idx));
+      write_record(rec, int2raw(xtiArray(i).lastSheet.idx));
     end loop;
     return rec;
   end;
@@ -1729,12 +1730,14 @@ create or replace package body xutl_xlsb is
       write_record(rec, 'FFFFFFFF'); -- unusedstring2
     end if;
     
-    -- retrieving generated names from formula context and append to existing collection
+    -- retrieving new names from formula context
     newNames := ExcelFmla.getNames;
-    for i in 1 .. newNames.count loop
-      names.extend;
-      names(names.last) := newNames(i);
-    end loop;
+    if newNames.count > names.count then
+      for i in names.count + 1 .. newNames.count loop
+        names.extend;
+        names(i) := newNames(i);
+      end loop;
+    end if;
     
     return rec;
 
@@ -2381,6 +2384,8 @@ create or replace package body xutl_xlsb is
     supLink    pls_integer;
   begin
     -- Generate BrtName records
+    -- Using an iterator pattern here since a name might generate a hidden future-function name,
+    -- whose corresponding record would have to be created in the same loop
     idx := names.first;
     while idx is not null loop
       recArray.extend;
@@ -2389,6 +2394,7 @@ create or replace package body xutl_xlsb is
     end loop;
     
     externals := ExcelFmla.getExternals;
+    
     if externals.xtiArray.count != 0 then
       put_simple_record(stream, BRT_BEGINEXTERNALS);
       
@@ -2397,6 +2403,15 @@ create or replace package body xutl_xlsb is
       while supLink is not null loop
         put_simple_record(stream, supLink);
         supLink := externals.supLinks.next(supLink);
+      end loop;
+
+      -- Update initial sheet indices as they might have shifted due to pageable sheets expansion
+      -- At this point, sheetMap should contain the correct indices
+      for i in 1 .. externals.xtiArray.count loop
+        if externals.xtiArray(i).firstSheet.idx != -2 then
+          externals.xtiArray(i).firstSheet.idx := sheetMap(upper(externals.xtiArray(i).firstSheet.name));
+          externals.xtiArray(i).lastSheet.idx := sheetMap(upper(externals.xtiArray(i).lastSheet.name));
+        end if;
       end loop;
       
       -- 2.4.665 BrtExternSheet
