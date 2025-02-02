@@ -36,6 +36,7 @@ create or replace package ExcelTypes is
     Marc Bleron       2024-03-13     Added definedName structure
     Marc Bleron       2024-08-13     Added dataValidation structure
     Marc Bleron       2024-09-04     Added conditionalFormatting structures
+    Marc Bleron       2025-02-02     Changed xti_t.firstSheet/lastSheet to CT_SheetBase data type
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -275,8 +276,8 @@ create or replace package ExcelTypes is
   type xti_t is record (
     idx           pls_integer
   , externalLink  pls_integer
-  , firstSheet    pls_integer
-  , lastSheet     pls_integer
+  , firstSheet    CT_SheetBase
+  , lastSheet     CT_SheetBase
   );
   
   type xtiMap_t is table of xti_t index by varchar2(24);

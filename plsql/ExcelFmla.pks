@@ -11,6 +11,7 @@ create or replace package ExcelFmla is
     Change history :
     Marc Bleron       2023-10-01     Creation
     Marc Bleron       2024-08-16     Data validation feature
+    Marc Bleron       2025-02-02     Renamed putName to addDefinedName
 ====================================================================================== */
 
   FMLATYPE_CELL     constant pls_integer := 0;
@@ -45,7 +46,7 @@ create or replace package ExcelFmla is
   function base26Encode (input in pls_integer) return varchar2 result_cache;
   function isValidCellReference (input in varchar2, refStyle in pls_integer default REF_A1) return boolean;
   
-  procedure putName (value in varchar2, sheetName in varchar2 default null, idx in pls_integer default null);
+  procedure addDefinedName (p_name in ExcelTypes.CT_DefinedName);
   procedure putSheet (name in varchar2, idx in pls_integer default null);
   procedure setCurrentSheet (sheetName in varchar2);
   procedure setCurrentCell (cellRef in varchar2);
