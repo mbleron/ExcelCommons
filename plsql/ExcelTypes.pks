@@ -37,6 +37,7 @@ create or replace package ExcelTypes is
     Marc Bleron       2024-08-13     Added dataValidation structure
     Marc Bleron       2024-09-04     Added conditionalFormatting structures
     Marc Bleron       2025-02-02     Changed xti_t.firstSheet/lastSheet to CT_SheetBase data type
+    Marc Bleron       2025-02-08     Image support
 ====================================================================================== */
 
   DEFAULT_FONT_FAMILY   constant varchar2(256) := 'Calibri';
@@ -363,6 +364,17 @@ create or replace package ExcelTypes is
   );
   
   type CT_CfRules is table of CT_CfRule;
+  
+  --[MS-XLSX] Extensions
+  type CT_Key is record (n varchar2(256), t varchar2(3));
+  Type CT_KeyList is table of CT_Key;
+  -- 2.6.180
+  type CT_RichValueStructure is record (t varchar2(256), keys CT_KeyList);
+  -- 2.6.181
+  type CT_RichValueStructureList is table of CT_RichValueStructure;
+  -- map of CT_RichValueStructure index in CT_RichValueStructureList indexed by CT_RichValueStructure.t
+  type CT_RichValueStructureMap is table of pls_integer index by varchar2(256);
+  type CT_RichValueStructures is record (structs CT_RichValueStructureList, structMap CT_RichValueStructureMap);
   
   type colorMap_t is table of varchar2(6) index by varchar2(20);
   function getColorMap return colorMap_t;

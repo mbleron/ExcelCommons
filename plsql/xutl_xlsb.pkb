@@ -50,6 +50,7 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2024-08-16     Data validation
     Marc Bleron       2024-09-06     Conditional formatting
     Marc Bleron       2025-01-26     Sheet indices update
+    Marc Bleron       2025-02-14     Image support
 ========================================================================================== */
 
   -- Binary Record Types
@@ -66,6 +67,8 @@ create or replace package body xutl_xlsb is
   BRT_FMLABOOL          constant pls_integer := 10;
   BRT_FMLAERROR         constant pls_integer := 11;
   BRT_SSTITEM           constant pls_integer := 19;
+  BRT_FRTBEGIN          constant pls_integer := 35;
+  BRT_FRTEND            constant pls_integer := 36;
   BRT_NAME              constant pls_integer := 39;
   BRT_FONT              constant pls_integer := 43;
   BRT_FMT               constant pls_integer := 44;
@@ -73,6 +76,10 @@ create or replace package body xutl_xlsb is
   BRT_BORDER            constant pls_integer := 46;
   BRT_XF                constant pls_integer := 47;
   BRT_STYLE             constant pls_integer := 48;
+  BRT_VALUEMETA         constant pls_integer := 50;
+  BRT_MDB               constant pls_integer := 51;
+  BRT_BEGINFMD          constant pls_integer := 52;
+  BRT_ENDFMD            constant pls_integer := 53;
   BRT_COLINFO           constant pls_integer := 60;
   BRT_DVAL              constant pls_integer := 64;
   BRT_BEGINSHEET        constant pls_integer := 129;
@@ -92,6 +99,15 @@ create or replace package body xutl_xlsb is
   BRT_MERGECELL         constant pls_integer := 176;
   BRT_BEGINSTYLESHEET   constant pls_integer := 278;
   BRT_ENDSTYLESHEET     constant pls_integer := 279;
+  BRT_BEGINMETADATA     constant pls_integer := 332;
+  BRT_ENDMETADATA       constant pls_integer := 333;
+  BRT_BEGINESMDTINFO    constant pls_integer := 334;
+  BRT_MDTINFO           constant pls_integer := 335;
+  BRT_ENDESMDTINFO      constant pls_integer := 336;
+  BRT_BEGINESMDB        constant pls_integer := 337;
+  BRT_ENDESMDB          constant pls_integer := 338;
+  BRT_BEGINESFMD        constant pls_integer := 339;
+  BRT_ENDESFMD          constant pls_integer := 340;
   BRT_BEGINLIST         constant pls_integer := 343;
   BRT_BEGINLISTCOL      constant pls_integer := 347;
   BRT_BEGINEXTERNALS    constant pls_integer := 353;
@@ -128,6 +144,8 @@ create or replace package body xutl_xlsb is
   BRT_BEGINCOMMENT      constant pls_integer := 635;
   BRT_COMMENTTEXT       constant pls_integer := 637;
   BRT_LISTPART          constant pls_integer := 661;
+  BRT_BEGINRICHVALUEBLOCK  constant pls_integer := 5002;
+  BRT_ENDRICHVALUEBLOCK    constant pls_integer := 5003;
   
   -- Error Types
   FT_ERR_NULL         constant raw(1) := '00';
@@ -2003,6 +2021,78 @@ create or replace package body xutl_xlsb is
     end loop;
     return rec;
   end;
+
+  -- 2.4.704 BrtMdtinfo
+  function make_MdtInfo (
+    mdtName  in varchar2 
+  )
+  return record_t
+  is
+    rec record_t := new_record(BRT_MDTINFO);
+  begin
+    --2.5.95 MdtFlags 
+    write_record(rec
+               , bitVector(
+                   0  -- fGhostRw
+                 , 0  -- fGhostCol
+                 , 0  -- fEdit
+                 , 0  -- fDelete
+                 , 1  -- fCopy
+                 , 1  -- fPasteAll
+                 , 0  -- fPasteFmlas
+                 , 1  -- fPasteValues
+                 ));
+    write_record(rec
+               , bitVector(
+                   0  -- fPasteFmts
+                 , 0  -- fPasteComments
+                 , 0  -- fPasteDv
+                 , 0  -- fPasteBorders
+                 , 0  -- fPasteColWidths
+                 , 0  -- fPasteNumFmts
+                 , 1  -- fMerge
+                 , 1  -- fSplitFirst
+                 ));                 
+    write_record(rec
+               , bitVector(
+                   0  -- fSplitAll
+                 , 1  -- fRwColShift
+                 , 0  -- fClearAll
+                 , 1  -- fClearFmts
+                 , 0  -- fClearContents
+                 , 1  -- fClearComments
+                 , 1  -- fAssign
+                 , 0  -- reserved1 - bit0
+                 )); 
+    write_record(rec
+               , bitVector(
+                   0  -- reserved1 - bit1
+                 , 0  -- reserved1 - bit2
+                 , 0  -- reserved1 - bit3
+                 , 0  -- reserved2 -- /!\ specs say it MUST 0 though Excel sets it to 1
+                 , 1  -- fCanCoerce
+                 , 0  -- fAdjust
+                 , 0  -- fCellMeta
+                 , 1  -- reserved3
+                 ));
+    write_record(rec, int2raw(120000));     -- metadataID
+    write_XLWideString(rec, mdtName); -- stName
+    return rec;
+  end;
+  
+  -- 2.4.73 BrtBeginEsfmd
+  function make_BeginEsfmd (
+    recCount  in pls_integer
+  , mdtName   in varchar2
+  )
+  return record_t
+  is
+    rec record_t := new_record(BRT_BEGINESFMD);
+  begin
+    write_record(rec, int2raw(recCount)); -- cFmd
+    write_XLWideString(rec, mdtName);     -- stName
+    return rec;
+  end;
   
   procedure put_RowHdr (
     stream         in out nocopy stream_t
@@ -2426,6 +2516,23 @@ create or replace package body xutl_xlsb is
     end loop;
     
   end;
+
+  procedure put_CellImage (
+    stream    in out nocopy stream_t
+  , colIndex  in pls_integer
+  , styleRef  in pls_integer default 0
+  , vmId      in pls_integer
+  )
+  is
+    rec  record_t;
+  begin
+    -- 2.4.845 BrtValueMeta
+    put_simple_record(stream, BRT_VALUEMETA, int2raw(vmId));
+    -- 2.4.318 BrtCellError
+    rec := make_Cell(BRT_CELLERROR, colIndex, styleRef);
+    write_record(rec, FT_ERR_VALUE);
+    put_record(stream, rec);
+  end;
   
   procedure put_CellFmla (
     stream    in out nocopy stream_t
@@ -2554,6 +2661,53 @@ create or replace package body xutl_xlsb is
       put_CFRule(stream, cfRules(i), i);
       put_simple_record(stream, BRT_ENDCONDFORMAT); -- BrtEndConditionalFormatting
     end loop;
+  end;
+
+  procedure put_Metadata (
+    stream      in out nocopy stream_t
+  , imageCount  in pls_integer
+  )
+  is
+    metadataType  varchar2(256) := 'XLRICHVALUE';
+  begin
+    put_simple_record(stream, BRT_BEGINMETADATA);
+    
+    -- 2.4.75 BrtBeginEsmdtinfo
+    put_simple_record(stream, BRT_BEGINESMDTINFO, int2raw(1)); -- cMdtinfo = 1
+    put_record(stream, make_MdtInfo(metadataType));
+    put_simple_record(stream, BRT_ENDESMDTINFO);
+    
+    -- 2.4.73 BrtBeginEsfmd
+    put_record(stream, make_BeginEsfmd(imageCount, metadataType));
+    for i in 1 .. imageCount loop
+      put_simple_record(stream, BRT_BEGINFMD);
+      put_simple_record(stream, BRT_FRTBEGIN, '01000200'); -- productVersion
+      
+      -- /!\ 2.4.194 BrtBeginRichValueBlock: the specs say it contains FRTHeader + irv data
+      -- but actually Excel puts it in the BrtEndRichValueBlock record
+      put_simple_record(stream, BRT_BEGINRICHVALUEBLOCK);
+      put_simple_record(stream, BRT_ENDRICHVALUEBLOCK, utl_raw.concat('00000000', int2raw(i-1))); -- FRTHeader + irv
+      
+      put_simple_record(stream, BRT_FRTEND);
+      put_simple_record(stream, BRT_ENDFMD);
+    end loop;
+    put_simple_record(stream, BRT_ENDESFMD);
+    
+    -- 2.4.74 BrtBeginEsmdb
+    put_simple_record(stream, BRT_BEGINESMDB, utl_raw.concat(int2raw(imageCount), '00000000')); -- cMdb + fCellMeta
+    for i in 1 .. imageCount loop
+      -- 2.4.703 BrtMdb
+      put_simple_record(stream
+                      , BRT_MDB
+                      , utl_raw.concat(
+                          int2raw(1)    -- cMdir
+                        , int2raw(1)    -- Mdir.iMdt
+                        , int2raw(i-1)  -- Mdir.mdd
+                        ));
+    end loop;
+    put_simple_record(stream, BRT_ENDESMDB);
+    
+    put_simple_record(stream, BRT_ENDMETADATA);
   end;
 
   -- convert a 0-based column number to base26 string

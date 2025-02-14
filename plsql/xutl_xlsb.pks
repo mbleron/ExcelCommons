@@ -48,6 +48,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2024-05-01     Added sheet state, formula support
     Marc Bleron       2024-08-16     Data validation
     Marc Bleron       2024-09-06     Conditional formatting
+    Marc Bleron       2025-02-14     Image support
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -281,6 +282,13 @@ create or replace package xutl_xlsb is
   , names   in out nocopy ExcelTypes.CT_DefinedNames
   );
 
+  procedure put_CellImage (
+    stream    in out nocopy stream_t
+  , colIndex  in pls_integer
+  , styleRef  in pls_integer default 0
+  , vmId      in pls_integer
+  );
+
   procedure put_CellFmla (
     stream    in out nocopy stream_t
   , colIndex  in pls_integer
@@ -309,6 +317,11 @@ create or replace package xutl_xlsb is
   procedure put_CondFmts (
     stream    in out nocopy stream_t
   , cfRules   in ExcelTypes.CT_CfRules
+  );
+
+  procedure put_Metadata (
+    stream      in out nocopy stream_t
+  , imageCount  in pls_integer
   );
     
   function new_context (
@@ -341,8 +354,8 @@ create or replace package xutl_xlsb is
   )
   return ExcelTableCellList;
   
-  --procedure read_all (file in blob);
-  --procedure read_formulas (file in blob);
+  procedure read_all (file in blob);
+  procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /
