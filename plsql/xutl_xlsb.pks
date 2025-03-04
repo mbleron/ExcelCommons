@@ -323,6 +323,11 @@ create or replace package xutl_xlsb is
     stream      in out nocopy stream_t
   , imageCount  in pls_integer
   );
+
+  procedure put_Drawing (
+    stream  in out nocopy stream_t
+  , rId     in varchar2
+  );
     
   function new_context (
     p_sst_part  in blob

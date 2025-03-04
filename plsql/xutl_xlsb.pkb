@@ -132,6 +132,7 @@ create or replace package body xutl_xlsb is
   BRT_WSFMTINFO         constant pls_integer := 485;
   BRT_DXF               constant pls_integer := 507;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
+  BRT_DRAWING           constant pls_integer := 550;
   BRT_COLOR             constant pls_integer := 564;
   BRT_BEGINDVALS        constant pls_integer := 573;
   BRT_ENDDVALS          constant pls_integer := 574;
@@ -2708,6 +2709,17 @@ create or replace package body xutl_xlsb is
     put_simple_record(stream, BRT_ENDESMDB);
     
     put_simple_record(stream, BRT_ENDMETADATA);
+  end;
+
+  procedure put_Drawing (
+    stream  in out nocopy stream_t
+  , rId     in varchar2
+  )
+  is
+    rec record_t := new_record(BRT_DRAWING);
+  begin
+    write_XLWideString(rec, rId);
+    put_record(stream, rec);
   end;
 
   -- convert a 0-based column number to base26 string
