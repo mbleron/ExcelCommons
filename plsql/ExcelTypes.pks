@@ -512,6 +512,7 @@ create or replace package ExcelTypes is
   
   procedure testCss (cssString in varchar2);
   
+  function convertToPx (input in varchar2) return pls_integer;
   function fromOADate (p_value in number, p_scale in pls_integer default 0) return timestamp_unconstrained;
   function getBuiltInDateFmts return CT_NumFmtMap;
   
