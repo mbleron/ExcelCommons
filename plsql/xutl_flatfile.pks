@@ -27,6 +27,7 @@ create or replace package xutl_flatfile is
     Change history :
     Marc Bleron       2019-05-21     Creation
     Marc Bleron       2022-11-15     Various fixes in read_fields function
+    Paul Scott        2025-04-03     Fix buffer size issue and exported column mapping helper routines
 ====================================================================================== */
 
   -- Flat File constants
@@ -44,6 +45,14 @@ create or replace package xutl_flatfile is
   DEFAULT_LINE_TERM      constant varchar2(2) := FF_CRLF;
   DEFAULT_TEXT_QUAL      constant varchar2(1) := FF_QUOTATION_MARK;
   
+  -- Column mapping helper routines
+  function base26encode (colNum in pls_integer)
+  return varchar2;
+
+  function base26decode (colRef in varchar2)
+  return pls_integer;
+
+  -- Context / parsing routines
   function new_context (
     p_content  in clob
   , p_cols     in varchar2

@@ -256,7 +256,7 @@ create or replace package body xutl_flatfile is
       dbms_lob.read(stream.content, amount, stream.offset, buf.content);
       stream.offset := stream.offset + amount;
       stream.available := stream.available - amount;
-      buf.sz := amount;
+      buf.sz := length(buf.content); -- Read actual length, as can be less than amount particularly if stream.content contains Unicode Supplementary Characters
       buf.offset := 1;
     else
       buf.content := null;
@@ -606,7 +606,7 @@ create or replace package body xutl_flatfile is
       dbms_lob.read(stream.content, amount, stream.offset, buf.content);
       stream.offset := stream.offset + amount;
       stream.available := stream.available - amount;
-      buf.sz := amount;
+      buf.sz := length(buf.content); -- Can be less than amount
       buf.offset := 1;
       buf.available := buf.sz;
     exception
