@@ -27,7 +27,7 @@ create or replace package xutl_flatfile is
     Change history :
     Marc Bleron       2019-05-21     Creation
     Marc Bleron       2022-11-15     Various fixes in read_fields function
-    Paul Scott        2015-04-03     Fix buffer size issue and exported column mapping helper routines
+    Paul Scott        2025-04-03     Fix buffer size issue and exported column mapping helper routines
 ====================================================================================== */
 
   -- Flat File constants
