@@ -359,8 +359,8 @@ create or replace package xutl_xlsb is
   )
   return ExcelTableCellList;
   
-  procedure read_all (file in blob);
-  procedure read_formulas (file in blob);
+  --procedure read_all (file in blob);
+  --procedure read_formulas (file in blob);
 
 end xutl_xlsb;
 /
