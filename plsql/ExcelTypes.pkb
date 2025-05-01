@@ -168,6 +168,7 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
   CSS_UNEXPECTED_TOKEN_TYPE  constant varchar2(256) := 'Unexpected <%s> at position (%d,%d)';
   CSS_UNEXPECTED_TOKEN       constant varchar2(256) := 'Unexpected <%s>: ''%s'' at position (%d,%d)';
   CSS_BAD_RGB_COLOR          constant varchar2(256) := 'Invalid RGB color code: %s';
+  CSS_INVALID_UNIT           constant varchar2(256) := 'Unsupported or invalid unit: %s';
   
   type cssTokenLabelMap_t is table of varchar2(256) index by pls_integer;
   cssTokenLabels  cssTokenLabelMap_t;
@@ -1656,6 +1657,49 @@ Wf4NA2j+AwNw/gQDdv6GAv/+AwH/XQNh/10Dwv8FA8r/BQPS/wUD2v8CA+D/BgPo/wYD+f8E';
     
     return richText;
     
+  end;
+  
+  function parseCssLength (input in varchar2)
+  return token_t
+  is
+    t  token_t;
+  begin
+    setNLSCache;
+    t.v := regexp_substr(input, '^\d*(\.\d+)?([eE][+-]?\d+)?');
+    t.nv := to_number(replace(t.v, '.', nls_decimal_sep));
+    t.u := substr(input, length(t.v) + 1);
+    return t;
+  end;
+  
+  function convertToPx (input in varchar2)
+  return pls_integer
+  is
+    t       token_t := parseCssLength(input);
+    output  pls_integer;
+    m       number := 1;
+  begin
+    if t.nv is not null then
+      if t.u is not null then
+        case t.u
+        when 'px' then
+          m := 1;
+        when 'cm' then
+          m := 96/2.54;
+        when 'mm' then
+          m := 96/2.54/10;
+        when 'in' then
+          m := 96;
+        when 'pc' then
+          m := 96/6;
+        when 'pt' then
+          m := 96/72;
+        else
+          error(CSS_INVALID_UNIT, t.u);
+        end case;
+      end if;
+      output := round(m * t.nv);
+    end if;
+    return output;
   end;
   
   function parseRawCss (css in varchar2)
