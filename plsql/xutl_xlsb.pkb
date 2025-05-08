@@ -51,6 +51,7 @@ create or replace package body xutl_xlsb is
     Marc Bleron       2024-09-06     Conditional formatting
     Marc Bleron       2025-01-26     Sheet indices update
     Marc Bleron       2025-02-14     Image support
+    Marc Bleron       2025-05-08     Sheet background
 ========================================================================================== */
 
   -- Binary Record Types
@@ -133,6 +134,7 @@ create or replace package body xutl_xlsb is
   BRT_DXF               constant pls_integer := 507;
   BRT_TABLESTYLECLIENT  constant pls_integer := 513;
   BRT_DRAWING           constant pls_integer := 550;
+  BRT_BKHIM             constant pls_integer := 562;
   BRT_COLOR             constant pls_integer := 564;
   BRT_BEGINDVALS        constant pls_integer := 573;
   BRT_ENDDVALS          constant pls_integer := 574;
@@ -2717,6 +2719,18 @@ create or replace package body xutl_xlsb is
   )
   is
     rec record_t := new_record(BRT_DRAWING);
+  begin
+    write_XLWideString(rec, rId);
+    put_record(stream, rec);
+  end;
+  
+  -- 2.4.307 BrtBkHim
+  procedure put_BkHim (
+    stream  in out nocopy stream_t
+  , rId     in varchar2
+  )
+  is
+    rec record_t := new_record(BRT_BKHIM);
   begin
     write_XLWideString(rec, rId);
     put_record(stream, rec);

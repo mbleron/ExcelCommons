@@ -49,6 +49,7 @@ create or replace package xutl_xlsb is
     Marc Bleron       2024-08-16     Data validation
     Marc Bleron       2024-09-06     Conditional formatting
     Marc Bleron       2025-02-14     Image support
+    Marc Bleron       2025-05-08     Sheet background
 ========================================================================================== */
   
   type SheetEntry_T is record (name varchar2(31 char), relId varchar2(255 char));
@@ -325,6 +326,11 @@ create or replace package xutl_xlsb is
   );
 
   procedure put_Drawing (
+    stream  in out nocopy stream_t
+  , rId     in varchar2
+  );
+
+  procedure put_BkHim (
     stream  in out nocopy stream_t
   , rId     in varchar2
   );
